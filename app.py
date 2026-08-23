@@ -5,7 +5,7 @@ import streamlit as st
 from typing import Dict, Any, List
 
 # -----------------------------------------------------------------------------
-# 1. PAGE CONFIG & BRANDING
+# 1. PAGE CONFIG
 # -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="AddrNLP | Address & Category Extractor",
@@ -50,7 +50,7 @@ def classify_cuisine_fast(text: str) -> str:
     return ", ".join(matched_categories) if matched_categories else "General Dining"
 
 # -----------------------------------------------------------------------------
-# 3. LOCAL SEED DATASETS
+# 3. LOCAL SEED FALLBACK DATASETS
 # -----------------------------------------------------------------------------
 CITY_LOCAL_RESTAURANTS = {
     "Austin": [
@@ -94,15 +94,15 @@ def generate_fallback_data(city: str, state: str, limit: int) -> List[Dict[str, 
     return results
 
 # -----------------------------------------------------------------------------
-# 4. OPTIMIZED DATA FETCHING WITH CACHING
+# 4. FAST CACHED DATA FETCHING
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_live_restaurants(city: str, state: str, limit: int = 10) -> List[Dict[str, str]]:
-    headers = {"User-Agent": "AddrNLP_Streamlit_App/2.0"}
+    headers = {"User-Agent": "AddrNLP_Streamlit_App/3.0"}
     
     try:
         geo_url = f"https://nominatim.openstreetmap.org/search?city={city}&state={state}&country=USA&format=json"
-        geo_resp = requests.get(geo_url, headers=headers, timeout=2.0)
+        geo_resp = requests.get(geo_url, headers=headers, timeout=1.5)
         
         if geo_resp.status_code == 200 and len(geo_resp.json()) > 0:
             lat = float(geo_resp.json()[0]["lat"])
@@ -110,12 +110,12 @@ def fetch_live_restaurants(city: str, state: str, limit: int = 10) -> List[Dict[
             
             overpass_url = "https://overpass-api.de/api/interpreter"
             bbox_query = f"""
-            [out:json][timeout:4];
+            [out:json][timeout:3];
             node["amenity"="restaurant"]({lat-0.08},{lon-0.08},{lat+0.08},{lon+0.08});
             out tags 35;
             """
             
-            response = requests.get(overpass_url, params={'data': bbox_query}, headers=headers, timeout=3.0)
+            response = requests.get(overpass_url, params={'data': bbox_query}, headers=headers, timeout=2.0)
             if response.status_code == 200 and "application/json" in response.headers.get("Content-Type", ""):
                 data = response.json()
                 elements = data.get('elements', [])
@@ -154,7 +154,7 @@ def fetch_live_restaurants(city: str, state: str, limit: int = 10) -> List[Dict[
     return generate_fallback_data(city, state, limit)
 
 # -----------------------------------------------------------------------------
-# 5. FAST EXTRACTION ENGINE
+# 5. EXTRACTION ENGINE
 # -----------------------------------------------------------------------------
 USPS_STREET_ABBR = {
     r"\bAVENUE\b": "AVE", r"\bAVE\.\b": "AVE",
@@ -234,10 +234,8 @@ def process_live_batch(records: List[Dict[str, str]], target_city: str) -> pd.Da
     return pd.DataFrame(processed)
 
 # -----------------------------------------------------------------------------
-# 6. DYNAMIC UI CONTROLS (REACTIVE SELECTBOXES)
+# 6. SAFE STATE INITIALIZATION & CONTROLS
 # -----------------------------------------------------------------------------
-st.sidebar.header("🌍 Dynamic Location Controls")
-
 city_map = {
     "TX": ["Austin", "Houston", "Dallas"],
     "CA": ["Los Angeles", "San Francisco", "San Diego"],
@@ -246,22 +244,46 @@ city_map = {
     "FL": ["Miami", "Orlando", "Tampa"]
 }
 
-# 1. State Selectbox: Changing state immediately updates available cities
-selected_state = st.sidebar.selectbox("Select State:", list(city_map.keys()))
+# 1. Initialize Session States explicitly
+if "selected_state" not in st.session_state:
+    st.session_state.selected_state = "TX"
 
-# 2. City Selectbox: Dynamically bound to the selected state's city list
-available_cities = city_map[selected_state]
-selected_city = st.sidebar.selectbox("Select City:", available_cities)
+if "selected_city" not in st.session_state or st.session_state.selected_city not in city_map[st.session_state.selected_state]:
+    st.session_state.selected_city = city_map[st.session_state.selected_state][0]
 
-# 3. Slider Control for Limit
+# Callback to reset city safely when state changes
+def on_state_change():
+    st.session_state.selected_city = city_map[st.session_state.selected_state][0]
+
+# Sidebar Widgets bound to Session State
+st.sidebar.header("🌍 Dynamic Location Controls")
+
+st.sidebar.selectbox(
+    "Select State:",
+    options=list(city_map.keys()),
+    key="selected_state",
+    on_change=on_state_change
+)
+
+st.sidebar.selectbox(
+    "Select City:",
+    options=city_map[st.session_state.selected_state],
+    key="selected_city"
+)
+
 record_limit = st.sidebar.slider("Number of Records:", min_value=5, max_value=20, value=10)
 
-# Fetch and Process Data
-with st.spinner(f"Loading data for {selected_city}, {selected_state}..."):
-    raw_api_data = fetch_live_restaurants(selected_city, selected_state, limit=record_limit)
-    df_results = process_live_batch(raw_api_data, selected_city)
+# -----------------------------------------------------------------------------
+# 7. MAIN RENDER
+# -----------------------------------------------------------------------------
+cur_city = st.session_state.selected_city
+cur_state = st.session_state.selected_state
 
-# Dashboard Metric Calculations
+with st.spinner(f"Loading data for {cur_city}, {cur_state}..."):
+    raw_api_data = fetch_live_restaurants(cur_city, cur_state, limit=record_limit)
+    df_results = process_live_batch(raw_api_data, cur_city)
+
+# Metric Calculations
 classified_count = (df_results["NLP Cuisine Category"] != "General Dining").sum()
 unique_categories = df_results[df_results["NLP Cuisine Category"] != "General Dining"]["NLP Cuisine Category"].nunique()
 
@@ -274,5 +296,5 @@ col5.metric("Valid ZIPs", (df_results["Regex ZIP"] != "N/A").sum())
 
 st.divider()
 
-st.markdown(f"### 📊 Categorized Location Dataset: {selected_city}, {selected_state}")
+st.markdown(f"### 📊 Categorized Location Dataset: {cur_city}, {cur_state}")
 st.dataframe(df_results, use_container_width=True)
