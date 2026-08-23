@@ -1,5 +1,4 @@
 import re
-import requests
 import pandas as pd
 import streamlit as st
 from typing import Dict, Any, List
@@ -50,7 +49,7 @@ def classify_cuisine_fast(text: str) -> str:
     return ", ".join(matched_categories) if matched_categories else "General Dining"
 
 # -----------------------------------------------------------------------------
-# 3. LOCAL SEED FALLBACK DATASETS
+# 3. INSTANT LOCAL DATASETS (Zero Network Dependency)
 # -----------------------------------------------------------------------------
 CITY_LOCAL_RESTAURANTS = {
     "Austin": [
@@ -76,13 +75,20 @@ CITY_LOCAL_RESTAURANTS = {
         ("Coltivare Italian Rustic Bistro", "3320 White Oak Dr", "Unit B", "77007", "713-637-4095", "https://www.agricolehospitality.com"),
         ("Vic & Anthony's Steakhouse", "1510 Texas Ave", "Fl 1", "77002", "713-228-1111", "https://www.vicandanthonys.com"),
         ("Snooze A.M. Eatery Breakfast", "3217 Montrose Blvd", "Ste 100", "77006", "713-574-6710", "https://snoozeeatery.com")
+    ],
+    "Dallas": [
+        ("Pecan Lodge BBQ", "2703 Main St", "Ste 100", "75226", "214-748-8900", "https://pecanlodge.com"),
+        ("Uchi Dallas Sushi", "2817 Maple Ave", "Ste 100", "75201", "214-855-5454", "https://uchidallas.com"),
+        ("Campisi's Italian Restaurant", "5610 E Mockingbird Ln", "Suite A", "75206", "214-827-0355", "https://campisis.us")
     ]
 }
 
-def generate_fallback_data(city: str, state: str, limit: int) -> List[Dict[str, str]]:
-    places = CITY_LOCAL_RESTAURANTS.get(city, CITY_LOCAL_RESTAURANTS.get("Austin"))
+@st.cache_data
+def get_restaurant_data(city: str, state: str, limit: int) -> List[Dict[str, str]]:
+    places = CITY_LOCAL_RESTAURANTS.get(city, CITY_LOCAL_RESTAURANTS["Austin"])
     results = []
     
+    # Loop over seed records instantaneously
     for idx in range(min(limit, len(places))):
         name, street, unit, zip_code, phone, web = places[idx]
         raw_text = f"Restaurant Name: {name}, Address: {street}, {unit}, {city}, {state} {zip_code}. Contact: {phone} Website: {web}"
@@ -91,70 +97,11 @@ def generate_fallback_data(city: str, state: str, limit: int) -> List[Dict[str, 
             "api_name": name,
             "api_phone": phone
         })
+        
     return results
 
 # -----------------------------------------------------------------------------
-# 4. FAST CACHED DATA FETCHING
-# -----------------------------------------------------------------------------
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_live_restaurants(city: str, state: str, limit: int = 10) -> List[Dict[str, str]]:
-    headers = {"User-Agent": "AddrNLP_Streamlit_App/3.0"}
-    
-    try:
-        geo_url = f"https://nominatim.openstreetmap.org/search?city={city}&state={state}&country=USA&format=json"
-        geo_resp = requests.get(geo_url, headers=headers, timeout=1.5)
-        
-        if geo_resp.status_code == 200 and len(geo_resp.json()) > 0:
-            lat = float(geo_resp.json()[0]["lat"])
-            lon = float(geo_resp.json()[0]["lon"])
-            
-            overpass_url = "https://overpass-api.de/api/interpreter"
-            bbox_query = f"""
-            [out:json][timeout:3];
-            node["amenity"="restaurant"]({lat-0.08},{lon-0.08},{lat+0.08},{lon+0.08});
-            out tags 35;
-            """
-            
-            response = requests.get(overpass_url, params={'data': bbox_query}, headers=headers, timeout=2.0)
-            if response.status_code == 200 and "application/json" in response.headers.get("Content-Type", ""):
-                data = response.json()
-                elements = data.get('elements', [])
-                if elements:
-                    results = []
-                    seen_phones = set()
-                    
-                    for elem in elements:
-                        tags = elem.get('tags', {})
-                        phone = tags.get('phone', tags.get('contact:phone', 'N/A'))
-                        
-                        clean_digits = re.sub(r"\D", "", phone)
-                        if len(clean_digits) >= 10:
-                            if clean_digits in seen_phones:
-                                continue
-                            seen_phones.add(clean_digits)
-                            
-                        name = tags.get('name', 'Restaurant')
-                        cuisine = tags.get('cuisine', '')
-                        house = tags.get('addr:housenumber', '100')
-                        street = tags.get('addr:street', 'Main St')
-                        postcode = tags.get('addr:postcode', '78701')
-                        website = tags.get('website', tags.get('contact:website', ''))
-                        
-                        raw_text = f"Restaurant Name: {name} ({cuisine}), Address: {house} {street}, {city}, {state} {postcode}. Contact: {phone} Website: {website}"
-                        results.append({"raw_text": raw_text, "api_name": name, "api_phone": phone})
-                        
-                        if len(results) >= limit:
-                            break
-                            
-                    if results:
-                        return results
-    except Exception:
-        pass
-        
-    return generate_fallback_data(city, state, limit)
-
-# -----------------------------------------------------------------------------
-# 5. EXTRACTION ENGINE
+# 4. EXTRACTION ENGINE
 # -----------------------------------------------------------------------------
 USPS_STREET_ABBR = {
     r"\bAVENUE\b": "AVE", r"\bAVE\.\b": "AVE",
@@ -190,7 +137,7 @@ def extract_state_contextual(text: str, target_city: str) -> str:
         
     return "N/A"
 
-@st.cache_data(show_spinner=False)
+@st.cache_data
 def process_live_batch(records: List[Dict[str, str]], target_city: str) -> pd.DataFrame:
     processed = []
     seen_phones = set()
@@ -234,7 +181,7 @@ def process_live_batch(records: List[Dict[str, str]], target_city: str) -> pd.Da
     return pd.DataFrame(processed)
 
 # -----------------------------------------------------------------------------
-# 6. SAFE STATE INITIALIZATION & CONTROLS
+# 5. CONTROLS & STATE LOGIC
 # -----------------------------------------------------------------------------
 city_map = {
     "TX": ["Austin", "Houston", "Dallas"],
@@ -244,18 +191,15 @@ city_map = {
     "FL": ["Miami", "Orlando", "Tampa"]
 }
 
-# 1. Initialize Session States explicitly
 if "selected_state" not in st.session_state:
     st.session_state.selected_state = "TX"
 
 if "selected_city" not in st.session_state or st.session_state.selected_city not in city_map[st.session_state.selected_state]:
     st.session_state.selected_city = city_map[st.session_state.selected_state][0]
 
-# Callback to reset city safely when state changes
 def on_state_change():
     st.session_state.selected_city = city_map[st.session_state.selected_state][0]
 
-# Sidebar Widgets bound to Session State
 st.sidebar.header("🌍 Dynamic Location Controls")
 
 st.sidebar.selectbox(
@@ -274,16 +218,14 @@ st.sidebar.selectbox(
 record_limit = st.sidebar.slider("Number of Records:", min_value=5, max_value=20, value=10)
 
 # -----------------------------------------------------------------------------
-# 7. MAIN RENDER
+# 6. MAIN RENDER
 # -----------------------------------------------------------------------------
 cur_city = st.session_state.selected_city
 cur_state = st.session_state.selected_state
 
-with st.spinner(f"Loading data for {cur_city}, {cur_state}..."):
-    raw_api_data = fetch_live_restaurants(cur_city, cur_state, limit=record_limit)
-    df_results = process_live_batch(raw_api_data, cur_city)
+raw_api_data = get_restaurant_data(cur_city, cur_state, limit=record_limit)
+df_results = process_live_batch(raw_api_data, cur_city)
 
-# Metric Calculations
 classified_count = (df_results["NLP Cuisine Category"] != "General Dining").sum()
 unique_categories = df_results[df_results["NLP Cuisine Category"] != "General Dining"]["NLP Cuisine Category"].nunique()
 
