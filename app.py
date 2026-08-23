@@ -1,14 +1,15 @@
 import re
+import requests
 import pandas as pd
 import streamlit as st
 import spacy
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 # -----------------------------------------------------------------------------
-# 1. PAGE CONFIG & BRANDING
+# 1. STREAMLIT PAGE CONFIG & BRANDING
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="AddrNLP | Address Standardization Engine",
+    page_title="AddrNLP | Dynamic Address Extractor",
     page_icon="📍",
     layout="wide"
 )
@@ -21,16 +22,14 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown('<div class="main-title">📍 AddrNLP</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-title">Hybrid Pipeline: Fast Regex + Contextual spaCy NER</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-title">Live API Fetcher + spaCy NER + USPS Address Standardization</div>', unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# 2. CACHED SPACY MODEL (DISABLE UNNEEDED PIPELINE COMPONENTS)
+# 2. LOAD SPACY MODEL (OPTIMIZED)
 # -----------------------------------------------------------------------------
 @st.cache_resource
 def load_spacy_nlp():
-    """Loads spaCy with only NER enabled for maximum inference speed."""
     try:
-        # Disable parser and lemmatizer to speed up inference dramatically
         return spacy.load("en_core_web_sm", disable=["parser", "lemmatizer", "textcat"])
     except OSError:
         from spacy.cli import download
@@ -40,58 +39,56 @@ def load_spacy_nlp():
 nlp = load_spacy_nlp()
 
 # -----------------------------------------------------------------------------
-# 3. SYNTHETIC DATASET GENERATOR
+# 3. LIVE OPENSTREETMAP (OVERPASS) API INTEGRATION
 # -----------------------------------------------------------------------------
-@st.cache_data
-def generate_messy_addresses() -> pd.DataFrame:
-    raw_samples = [
-        "Contact JOHN DOE at 123 North Main St, Apt 4B, New York, NY 10001, phone 555-0192 or john@example.com",
-        "Ship to ACME CORP, 456 WEST 5TH AVENUE, SUITE 100, AUSTIN TX 78701 (RECV: Jane Smith)",
-        "deliver to: Dr. Robert Bruce, 789 S. BROADWAY BLVD #12, LOS ANGELES, CA 90014, email: rbruce@med.org",
-        "101 Ocean Dr. Unit 301, Miami FL 33139 - Attn: Maria Garcia Ph: 3055550143",
-        "555 MARTIN LUTHER KING JR BLVD, SUITE A, ATLANTA GA 30303 (Contact: Sales Dept)",
-        "Invoice to Apex Solutions: 888 E. 42nd St, Fl 5, Chicago, IL 60605, USA",
-        "Send mail to 1244 ROUTE 9 NORTH, BUILDING B, EDISON NJ 08817. RE: Alice Cooper",
-        "333 W Grand Ave, Apt 2C, Chicago, IL 60654. Emergency Contact: 312-555-0188",
-        "1234 S 1st Street, Apt 101, Phoenix AZ 85001 - Call Bob @ 6025550199",
-        "999 Industrial Pkwy Ste 400, Seattle WA 98101 / Operations Dept",
-    ]
+@st.cache_data(ttl=3600)  # Cache API responses for 1 hour
+def fetch_live_restaurants(city: str, state: str, limit: int = 10) -> List[Dict[str, str]]:
+    """Fetches real restaurant addresses and contact info using OpenStreetMap's Overpass API."""
+    overpass_url = "https://overpass-api.de/api/interpreter"
     
-    names = ["Alice Smith", "Bob Jones", "Charlie Brown", "David Miller", "Emma Wilson", "Frank Wright", "Grace Lee", "Henry Ford", "Isabella Martinez", "Jack Taylor"]
-    streets = ["Main St", "Broadway Ave", "Market St", "Washington Rd", "Park Ave", "Oak St", "Pine Rd", "Cedar Ln", "Elm St", "Maple Ave"]
-    cities = [("New York", "NY", "10001"), ("Los Angeles", "CA", "90001"), ("Chicago", "IL", "60601"), ("Houston", "TX", "77001"), ("Phoenix", "AZ", "85001"), 
-              ("Philadelphia", "PA", "19101"), ("San Antonio", "TX", "78201"), ("San Diego", "CA", "92101"), ("Dallas", "TX", "75201"), ("San Jose", "CA", "95101")]
-    units = ["Apt 101", "Suite 200", "Bldg B", "Unit 4", "Floor 3", "Ste 50", "# 12B", "", "", ""]
-
-    records = []
-    for i, s in enumerate(raw_samples):
-        records.append({"id": i + 1, "raw_text": s})
-
-    idx = 11
-    for name in names:
-        for street_idx, street in enumerate(streets):
-            city, state, zip_code = cities[street_idx]
-            unit = units[(street_idx + len(name)) % len(units)]
-            unit_str = f", {unit}" if unit else ""
+    # Overpass QL Query searching for restaurants inside the specified city/state
+    query = f"""
+    [out:json][timeout:25];
+    area["name"="{city}"]->.searchArea;
+    (
+      node["amenity"="restaurant"](area.searchArea);
+      way["amenity"="restaurant"](area.searchArea);
+    );
+    out tags center {limit};
+    """
+    
+    try:
+        response = requests.get(overpass_url, params={'data': query}, timeout=10)
+        data = response.json()
+        
+        results = []
+        for elem in data.get('elements', []):
+            tags = elem.get('tags', {})
+            name = tags.get('name', 'Unknown Restaurant')
             
-            if idx % 3 == 0:
-                raw = f"Delivery for {name}: {idx * 10} {street}{unit_str}, {city}, {state} {zip_code}. Direct line: ({idx*10%800+100})-555-01{idx:02d}"
-            elif idx % 3 == 1:
-                raw = f"ATTN: {name.upper()} @ {idx * 10} N. {street.upper()} {unit_str.upper()} - {city.upper()} {state} {zip_code} ({name.lower().replace(' ', '.')}@business.org)"
-            else:
-                raw = f"{idx * 10} S {street.lower()}{unit_str.lower()}, {city}, {state} {zip_code} - RE: {name}"
+            # Reconstruct raw address string from tags
+            house = tags.get('addr:housenumber', '')
+            street = tags.get('addr:street', '')
+            postcode = tags.get('addr:postcode', '')
+            phone = tags.get('phone', tags.get('contact:phone', ''))
+            website = tags.get('website', tags.get('contact:website', ''))
             
-            records.append({"id": idx, "raw_text": raw})
-            idx += 1
-            if idx > 100:
-                break
-        if idx > 100:
-            break
-
-    return pd.DataFrame(records)
+            # Compose a realistic messy unstructured raw record
+            raw_text = f"Restaurant: {name}, Located at {house} {street}, {city}, {state} {postcode}. Contact: {phone} {website}"
+            
+            results.append({
+                "raw_text": raw_text,
+                "api_name": name,
+                "api_phone": phone if phone else "N/A"
+            })
+            
+        return results
+    except Exception as e:
+        st.error(f"Error fetching live API data: {e}")
+        return []
 
 # -----------------------------------------------------------------------------
-# 4. EXTRACTION ENGINE (FAST REGEX + BATCH SPACY)
+# 4. EXTRACTION & STANDARDIZATION ENGINE
 # -----------------------------------------------------------------------------
 USPS_STREET_ABBR = {
     r"\bAVENUE\b": "AVE", r"\bAVE\.\b": "AVE",
@@ -100,11 +97,7 @@ USPS_STREET_ABBR = {
     r"\bBOULEVARD\b": "BLVD", r"\bBLVD\.\b": "BLVD",
     r"\bDRIVE\b": "DR", r"\bDR\.\b": "DR",
     r"\bLANE\b": "LN", r"\bLN\.\b": "LN",
-    r"\bPARKWAY\b": "PKWY", r"\bPKWY\.\b": "PKWY",
-    r"\bSUITE\b": "STE", r"\bSTE\.\b": "STE",
-    r"\bAPARTMENT\b": "APT", r"\bAPT\.\b": "APT",
-    r"\bBUILDING\b": "BLDG", r"\bBLDG\.\b": "BLDG",
-    r"\bFLOOR\b": "FL", r"\bFL\.\b": "FL",
+    r"\bSUITE\b": "STE", r"\bAPARTMENT\b": "APT",
     r"\bNORTH\b": "N", r"\bSOUTH\b": "S", r"\bEAST\b": "E", r"\bWEST\b": "W"
 }
 
@@ -112,77 +105,86 @@ REGEX_PATTERNS = {
     "zip_code": r"\b\d{5}(?:-\d{4})?\b",
     "state": r"\b(AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY)\b",
     "phone": r"\(?\b\d{3}\)?[-. ]?\d{3}[-. ]?\d{4}\b",
-    "email": r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"
+    "url": r"https?://[^\s]+"
 }
 
-# CACHE THE FULL BATCH PROCESSING RESULT
-@st.cache_data
-def process_entire_dataset() -> pd.DataFrame:
-    """Executes spaCy nlp.pipe() and Regex standardization in a cached single pass."""
-    df = generate_messy_addresses()
-    texts = df["raw_text"].tolist()
-    
-    # 1. High-speed batch processing with spaCy nlp.pipe()
-    docs = list(nlp.pipe(texts, batch_size=50))
+def process_live_batch(records: List[Dict[str, str]]) -> pd.DataFrame:
+    """Runs spaCy NER and Regex cleaning on live API records."""
+    texts = [r["raw_text"] for r in records]
+    docs = list(nlp.pipe(texts, batch_size=20))
     
     processed = []
     for idx, doc in enumerate(docs):
         text = texts[idx]
         
-        persons = [ent.text for ent in doc.ents if ent.label_ == "PERSON"]
+        # spaCy NER
         orgs = [ent.text for ent in doc.ents if ent.label_ == "ORG"]
         gpes = [ent.text for ent in doc.ents if ent.label_ == "GPE"]
-
-        # 2. Regex parsing
+        
+        # Regex Parsing
         zip_match = re.search(REGEX_PATTERNS["zip_code"], text)
         state_match = re.search(REGEX_PATTERNS["state"], text, re.IGNORECASE)
         phone_match = re.search(REGEX_PATTERNS["phone"], text)
-        email_match = re.search(REGEX_PATTERNS["email"], text)
-
-        # 3. Standardization
-        standardized_text = text.upper()
-        for pattern, replacement in USPS_STREET_ABBR.items():
-            standardized_text = re.sub(pattern, replacement, standardized_text, flags=re.IGNORECASE)
+        url_match = re.search(REGEX_PATTERNS["url"], text)
         
-        clean_address = re.sub(REGEX_PATTERNS["email"], "", standardized_text)
-        clean_address = re.sub(REGEX_PATTERNS["phone"], "", clean_address)
-        clean_address = re.sub(r"\s+", " ", clean_address).strip()
-
+        # Address Standardization
+        std_text = text.upper()
+        for pattern, replacement in USPS_STREET_ABBR.items():
+            std_text = re.sub(pattern, replacement, std_text, flags=re.IGNORECASE)
+            
+        clean_addr = re.sub(REGEX_PATTERNS["url"], "", std_text)
+        clean_addr = re.sub(r"\s+", " ", clean_addr).strip()
+        
         processed.append({
-            "id": df.iloc[idx]["id"],
-            "raw_text": text,
-            "spaCy PERSON": ", ".join(persons) if persons else "N/A",
+            "ID": idx + 1,
+            "Raw API Input": text,
             "spaCy ORG": ", ".join(orgs) if orgs else "N/A",
             "spaCy GPE": ", ".join(gpes) if gpes else "N/A",
-            "Regex Phone": phone_match.group(0) if phone_match else "N/A",
-            "Regex Email": email_match.group(0) if email_match else "N/A",
+            "Extracted Phone": phone_match.group(0) if phone_match else records[idx]["api_phone"],
+            "Extracted Website": url_match.group(0) if url_match else "N/A",
             "Regex State": state_match.group(0).upper() if state_match else "N/A",
             "Regex ZIP": zip_match.group(0) if zip_match else "N/A",
-            "Standardized Address": clean_address
+            "Standardized Address": clean_addr
         })
-
+        
     return pd.DataFrame(processed)
 
 # -----------------------------------------------------------------------------
-# 5. STREAMLIT UI (INSTANT LOADING)
+# 5. DYNAMIC UI & CONTROLS
 # -----------------------------------------------------------------------------
-st.sidebar.header("⚙️ Controls")
-search_term = st.sidebar.text_input("Filter Raw Text Records:", "")
+st.sidebar.header("🌍 Dynamic Location Controls")
 
-# Fetch cached dataset instantly
-df_processed = process_entire_dataset()
+# Location Selectors
+selected_state = st.sidebar.selectbox("Select State:", ["TX", "CA", "NY", "IL", "FL"])
 
-if search_term:
-    df_processed = df_processed[df_processed["raw_text"].str.contains(search_term, case=False)]
+city_map = {
+    "TX": ["Austin", "Houston", "Dallas"],
+    "CA": ["Los Angeles", "San Francisco", "San Diego"],
+    "NY": ["New York", "Buffalo", "Rochester"],
+    "IL": ["Chicago", "Springfield", "Peoria"],
+    "FL": ["Miami", "Orlando", "Tampa"]
+}
 
-# Metric Row
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Batch Records", len(df_processed))
-col2.metric("Persons Detected", (df_processed["spaCy PERSON"] != "N/A").sum())
-col3.metric("Orgs Detected", (df_processed["spaCy ORG"] != "N/A").sum())
-col4.metric("Valid ZIPs", (df_processed["Regex ZIP"] != "N/A").sum())
+selected_city = st.sidebar.selectbox("Select City:", city_map[selected_state])
+record_limit = st.sidebar.slider("Number of Live Records:", min_value=5, max_value=20, value=10)
 
-st.divider()
+# Fetch Live Data
+with st.spinner(f"Fetching live OpenStreetMap listings for {selected_city}, {selected_state}..."):
+    raw_api_data = fetch_live_restaurants(selected_city, selected_state, limit=record_limit)
 
-st.markdown("### 📊 Extracted & Standardized Dataset")
-st.dataframe(df_processed, use_container_width=True)
+if raw_api_data:
+    df_results = process_live_batch(raw_api_data)
+    
+    # Metric KPI Header
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Live Records Fetched", len(df_results))
+    col2.metric("Orgs Identified (spaCy)", (df_results["spaCy ORG"] != "N/A").sum())
+    col3.metric("Phones Extracted", (df_results["Extracted Phone"] != "N/A").sum())
+    col4.metric("Valid ZIPs Parsed", (df_results["Regex ZIP"] != "N/A").sum())
+
+    st.divider()
+
+    st.markdown(f"### 📡 Live API Results: {selected_city}, {selected_state}")
+    st.dataframe(df_results, use_container_width=True)
+else:
+    st.warning("No live records found for this location. Try selecting another city.")
