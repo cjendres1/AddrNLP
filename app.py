@@ -2,7 +2,6 @@ import re
 import requests
 import pandas as pd
 import streamlit as st
-import spacy
 from typing import Dict, Any, List
 
 # -----------------------------------------------------------------------------
@@ -81,7 +80,7 @@ CITY_LOCAL_RESTAURANTS = {
 }
 
 def generate_fallback_data(city: str, state: str, limit: int) -> List[Dict[str, str]]:
-    places = CITY_LOCAL_RESTAURANTS.get(city, CITY_LOCAL_RESTAURANTS["Austin"])
+    places = CITY_LOCAL_RESTAURANTS.get(city, CITY_LOCAL_RESTAURANTS.get("Austin"))
     results = []
     
     for idx in range(min(limit, len(places))):
@@ -95,7 +94,7 @@ def generate_fallback_data(city: str, state: str, limit: int) -> List[Dict[str, 
     return results
 
 # -----------------------------------------------------------------------------
-# 4. OPTIMIZED DATA FETCHING WITH AGGRESIVE CACHING
+# 4. OPTIMIZED DATA FETCHING WITH CACHING
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_live_restaurants(city: str, state: str, limit: int = 10) -> List[Dict[str, str]]:
@@ -235,31 +234,34 @@ def process_live_batch(records: List[Dict[str, str]], target_city: str) -> pd.Da
     return pd.DataFrame(processed)
 
 # -----------------------------------------------------------------------------
-# 6. DYNAMIC UI & CONTROLS WITH FORM SUBMISSION
+# 6. DYNAMIC UI CONTROLS (REACTIVE SELECTBOXES)
 # -----------------------------------------------------------------------------
 st.sidebar.header("🌍 Dynamic Location Controls")
 
-with st.sidebar.form("filter_form"):
-    selected_state = st.selectbox("Select State:", ["TX", "CA", "NY", "IL", "FL"])
-    city_map = {
-        "TX": ["Austin", "Houston", "Dallas"],
-        "CA": ["Los Angeles", "San Francisco", "San Diego"],
-        "NY": ["New York", "Buffalo", "Rochester"],
-        "IL": ["Chicago", "Springfield", "Peoria"],
-        "FL": ["Miami", "Orlando", "Tampa"]
-    }
+city_map = {
+    "TX": ["Austin", "Houston", "Dallas"],
+    "CA": ["Los Angeles", "San Francisco", "San Diego"],
+    "NY": ["New York", "Buffalo", "Rochester"],
+    "IL": ["Chicago", "Springfield", "Peoria"],
+    "FL": ["Miami", "Orlando", "Tampa"]
+}
 
-    selected_city = st.selectbox("Select City:", city_map[selected_state])
-    record_limit = st.slider("Number of Records:", min_value=5, max_value=20, value=10)
-    
-    # Form submission prevents page execution on every slider drag
-    submit_button = st.form_submit_button("Apply Filters")
+# 1. State Selectbox: Changing state immediately updates available cities
+selected_state = st.sidebar.selectbox("Select State:", list(city_map.keys()))
 
+# 2. City Selectbox: Dynamically bound to the selected state's city list
+available_cities = city_map[selected_state]
+selected_city = st.sidebar.selectbox("Select City:", available_cities)
+
+# 3. Slider Control for Limit
+record_limit = st.sidebar.slider("Number of Records:", min_value=5, max_value=20, value=10)
+
+# Fetch and Process Data
 with st.spinner(f"Loading data for {selected_city}, {selected_state}..."):
     raw_api_data = fetch_live_restaurants(selected_city, selected_state, limit=record_limit)
     df_results = process_live_batch(raw_api_data, selected_city)
 
-# Metric Calculations
+# Dashboard Metric Calculations
 classified_count = (df_results["NLP Cuisine Category"] != "General Dining").sum()
 unique_categories = df_results[df_results["NLP Cuisine Category"] != "General Dining"]["NLP Cuisine Category"].nunique()
 
