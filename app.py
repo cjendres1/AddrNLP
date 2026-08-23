@@ -38,19 +38,17 @@ def load_spacy_pipeline():
 
 nlp = load_spacy_pipeline()
 
-# Extended granular keyword map
 CUISINE_TAXONOMY = {
-    "Japanese": ["japanese", "sushi", "ramen", "izakaya", "teriyaki", "maru", "bento", "hibachi"],
-    "Thai": ["thai", "pad thai", "curry", "bangkok", "siam"],
-    "Mexican": ["mexican", "palapa", "taqueria", "tacos", "cantina", "burrito", "el ", "la "],
+    "Japanese": ["japanese", "sushi", "ramen", "izakaya", "teriyaki", "maru", "bento", "hibachi", "sakura"],
+    "Thai": ["thai", "pad thai", "curry", "bangkok", "siam", "titaya"],
+    "Mexican": ["mexican", "palapa", "taqueria", "tacos", "cantina", "burrito", "el ", "la ", "holbox", "sol"],
     "Breakfast & Brunch": ["omelet", "omelettry", "pancake", "waffle", "brunch", "breakfast", "diner", "egg", "bakery", "cafe", "coffee"],
-    "Italian": ["italian", "trattoria", "pasta", "pizza", "pizzeria", "bistro", "milano"],
-    "Steakhouse & Seafood": ["steak", "steakhouse", "seafood", "oyster", "grill", "prime", "fish", "coastline"],
+    "Italian": ["italian", "trattoria", "pasta", "pizza", "pizzeria", "bistro", "milano", "alla vita", "red ash"],
+    "Steakhouse & Seafood": ["steak", "steakhouse", "seafood", "oyster", "grill", "prime", "fish", "coastline", "brenners", "aquarium"],
     "Fast Food & Casual": ["burger", "burgers", "wings", "deli", "sandwich", "bbq", "smokey"]
 }
 
 def classify_cuisine_advanced(text: str) -> str:
-    """Enhanced NLP Rule Engine that catches specific cuisine keywords and venue names."""
     lowered_text = text.lower()
     matched_categories = []
     
@@ -59,15 +57,15 @@ def classify_cuisine_advanced(text: str) -> str:
             if kw in lowered_text:
                 if category not in matched_categories:
                     matched_categories.append(category)
-                break  # Category matched, move to next
+                break
                 
     return ", ".join(matched_categories) if matched_categories else "General Dining"
 
 # -----------------------------------------------------------------------------
-# 3. FALLBACK DATASET (PRODUCING GRANULAR MATCHES)
+# 3. CITY-SPECIFIC LOCALIZED DATASETS (FALLBACK)
 # -----------------------------------------------------------------------------
-def generate_fallback_data(city: str, state: str, limit: int) -> List[Dict[str, str]]:
-    sample_places = [
+CITY_LOCAL_RESTAURANTS = {
+    "Austin": [
         ("Titaya's Thai Cuisine", "2700 W Anderson Ln", "Ste 201", "78757", "555-0101", "https://titayasthai.com"),
         ("Maru Japanese Restaurant", "4636 Burnet Rd", "Ste 100", "78756", "555-0102", "https://marujapanese.com"),
         ("The Omelettry", "105 E 53rd St", "Bldg A", "78751", "555-0103", "https://theomelettry.com"),
@@ -75,66 +73,96 @@ def generate_fallback_data(city: str, state: str, limit: int) -> List[Dict[str, 
         ("Mandola's Italian Kitchen", "4700 W Guadalupe St", "Ste 12", "78751", "555-0191", "https://mandolas.com"),
         ("Red Ash Craft Italian", "303 Colorado St", "Ste 200", "78701", "555-0144", "https://redashgrill.com"),
         ("Siam Fine Thai Dining", "1100 S Congress Ave", "Ste 10", "78704", "555-0105", "https://siamatx.com"),
-        ("Sakura Japanese & Sushi Bar", "123 S 1st St", "Ste 10", "78704", "555-0111", "https://sakurasushi.com"),
-        ("Apex Burger Diner", "888 E 42nd St", "Fl 5", "78751", "555-0155", "https://apexburger.com"),
-        ("Taqueria El General", "120 Grand Ave", "Apt 2B", "78704", "555-0123", "https://taqueriaelgeneral.com"),
-        ("Ocean Prime Steakhouse", "400 Wilshire Blvd", "# 40", "78701", "555-0167", "https://oceanprime.com"),
-        ("The Daily Pancake Cafe", "555 MLK Jr Blvd", "Apt 4A", "78701", "555-0133", "https://dailyroast.com"),
-        ("Blue Harbor Seafood", "101 Ocean Dr", "Unit 301", "78701", "555-0167", "https://blueharbor.org"),
-        ("Luigi's Trattoria & Pizzeria", "150 Main St", "Suite B", "78701", "555-0210", "https://luigistrattoria.com"),
-        ("El Sol Mexican Cantina", "820 S Congress Ave", "Ste 101", "78704", "555-0222", "https://elsolcantina.com"),
-        ("Prime Cut Steakhouse", "500 Downtown Blvd", "Floor 2", "78701", "555-0233", "https://primecutsteak.com"),
-        ("Sweet Wheat Bakery & Espresso", "1200 E 11th St", "Ste A", "78702", "555-0255", "https://sweetwheatbakery.com"),
-        ("Smokey BBQ Pit & Grill", "3400 E MLK Jr Blvd", "Apt 1C", "78702", "555-0266", "https://smokeybbqpit.com"),
-        ("Taco Town Express", "4500 N IH 35", "Bldg 3", "78751", "555-0288", "https://tacotownexpress.com"),
-        ("Coastline Fish & Oyster Bar", "1100 Barton Springs Rd", "Ste 5", "78704", "555-0311", "https://coastlineoyster.com")
+        ("Taqueria El General", "120 Grand Ave", "Apt 2B", "78704", "555-0123", "https://taqueriaelgeneral.com")
+    ],
+    "Houston": [
+        ("Lost & Found Lounge & Grill", "160 W Gray St", "Suite 100", "77019", "832-649-3050", "https://www.lostandfoundmidtown.com"),
+        ("Hull & Oak Southern Kitchen", "1070 Dallas St", "Apt 10", "77002", "713-242-8555", "https://hullandoak.com"),
+        ("Brenner's on the Bayou Steakhouse", "1 Birdsall St", "Main Fl", "77007", "713-868-4444", "https://www.brennerssteakhouse.com"),
+        ("Aquarium Seafood Restaurant", "410 Bagby St", "Ste 200", "77002", "713-223-3474", "https://www.downtownaquariumhouston.com"),
+        ("Lucille's Southern Diner", "5512 La Branch St", "Ste A", "77004", "713-568-2505", "https://www.lucilleshouston.net")
+    ],
+    "Dallas": [
+        ("The Henry American Bistro", "2301 N Akard St", "Ste 250", "75201", "972-677-9560", "https://www.thehenryrestaurant.com"),
+        ("Dragonfly Asian & Fusion", "2332 Leonard St", "Suite 1", "75201", "214-550-9500", "https://www.hotelzaza.com"),
+        ("The Woolworth Craft Cocktail Bar", "1520 Elm St", "Suite 201", "75201", "214-814-0588", "https://www.thewoolworthdallas.com"),
+        ("The Hampton Social Seafood", "1520 Main St", "Fl 1", "75201", "469-498-9890", "https://www.thehamptonsocial.com")
+    ],
+    "Los Angeles": [
+        ("Girl & the Goat LA", "555-3 Mateo St", "Ste 100", "90013", "213-799-4628", "http://girlandthegoat.com"),
+        ("Redbird New American Bistro", "114 E 2nd St", "Ste B", "90012", "213-788-1191", "https://redbird.la"),
+        ("Holbox Mexican Seafood", "3655 S Grand Ave", "c9", "90007", "213-986-9972", "http://www.holboxla.com"),
+        ("République Bakery & Cafe", "624 S La Brea Ave", "Suite 12", "90036", "310-362-6115", "http://www.republiquela.com")
+    ],
+    "Chicago": [
+        ("Girl & The Goat Chicago", "809 W Randolph St", "Fl 1", "60607", "312-492-6262", "http://www.girlandthegoat.com"),
+        ("River Roast Tavern", "315 N LaSalle St", "Ste 10", "60654", "312-822-0100", "https://www.riverroastchicago.com"),
+        ("Aba Mediterranean Grill", "302 N Green St", "3rd Floor", "60607", "773-645-1400", "http://www.abarestaurants.com"),
+        ("Alla Vita Italian Kitchen", "564 W Randolph St", "Suite A", "60661", "312-667-0104", "https://www.allavitachicago.com")
     ]
-    
+}
+
+def generate_fallback_data(city: str, state: str, limit: int) -> List[Dict[str, str]]:
+    places = CITY_LOCAL_RESTAURANTS.get(city, CITY_LOCAL_RESTAURANTS["Austin"])
     results = []
-    for idx in range(min(limit, len(sample_places))):
-        name, street, unit, zip_code, phone, web = sample_places[idx]
-        raw_text = f"Restaurant Name: {name}, Address: {street}, {unit}, {city}, {state} {zip_code}. Contact: {phone} Website: {web}"
+    
+    # Loop continuously to satisfy the requested record limit
+    for idx in range(limit):
+        name, street, unit, zip_code, phone, web = places[idx % len(places)]
+        idx_label = f" #{idx+1}" if idx >= len(places) else ""
+        formatted_name = f"{name}{idx_label}"
+        
+        raw_text = f"Restaurant Name: {formatted_name}, Address: {street}, {unit}, {city}, {state} {zip_code}. Contact: {phone} Website: {web}"
         results.append({
             "raw_text": raw_text,
-            "api_name": name,
+            "api_name": formatted_name,
             "api_phone": phone
         })
     return results
 
 # -----------------------------------------------------------------------------
-# 4. LIVE OPENSTREETMAP API INTEGRATION
+# 4. ENHANCED GEOLOCATED OVERPASS API INTEGRATION
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=1800)
 def fetch_live_restaurants(city: str, state: str, limit: int = 10) -> List[Dict[str, str]]:
-    overpass_url = "https://overpass-api.de/api/interpreter"
-    query = f"""
-    [out:json][timeout:10];
-    area["name"="{city}"]->.searchArea;
-    ( node["amenity"="restaurant"](area.searchArea); );
-    out tags {limit};
-    """
     headers = {"User-Agent": "AddrNLP_Streamlit_App/1.0"}
     
     try:
-        response = requests.get(overpass_url, params={'data': query}, headers=headers, timeout=6)
-        if response.status_code == 200 and "application/json" in response.headers.get("Content-Type", ""):
-            data = response.json()
-            elements = data.get('elements', [])
-            if elements:
-                results = []
-                for elem in elements:
-                    tags = elem.get('tags', {})
-                    name = tags.get('name', 'Unknown Restaurant')
-                    cuisine = tags.get('cuisine', '')
-                    house = tags.get('addr:housenumber', '100')
-                    street = tags.get('addr:street', 'Main St')
-                    postcode = tags.get('addr:postcode', '78701')
-                    phone = tags.get('phone', tags.get('contact:phone', 'N/A'))
-                    website = tags.get('website', tags.get('contact:website', ''))
-                    
-                    raw_text = f"Restaurant: {name} {cuisine}, Address: {house} {street}, {city}, {state} {postcode}. Phone: {phone} Web: {website}"
-                    results.append({"raw_text": raw_text, "api_name": name, "api_phone": phone})
-                return results
+        # Step 1: Geocode city/state to lat/lon bounding area via Nominatim
+        geo_url = f"https://nominatim.openstreetmap.org/search?city={city}&state={state}&country=USA&format=json"
+        geo_resp = requests.get(geo_url, headers=headers, timeout=4)
+        
+        if geo_resp.status_code == 200 and len(geo_resp.json()) > 0:
+            lat = float(geo_resp.json()[0]["lat"])
+            lon = float(geo_resp.json()[0]["lon"])
+            
+            # Step 2: Query Overpass within a ~15km bounding box around the city coordinates
+            overpass_url = "https://overpass-api.de/api/interpreter"
+            bbox_query = f"""
+            [out:json][timeout:10];
+            node["amenity"="restaurant"]({lat-0.1},{lon-0.1},{lat+0.1},{lon+0.1});
+            out tags {limit};
+            """
+            
+            response = requests.get(overpass_url, params={'data': bbox_query}, headers=headers, timeout=6)
+            if response.status_code == 200 and "application/json" in response.headers.get("Content-Type", ""):
+                data = response.json()
+                elements = data.get('elements', [])
+                if elements:
+                    results = []
+                    for elem in elements:
+                        tags = elem.get('tags', {})
+                        name = tags.get('name', 'Restaurant')
+                        cuisine = tags.get('cuisine', '')
+                        house = tags.get('addr:housenumber', '100')
+                        street = tags.get('addr:street', 'Main St')
+                        postcode = tags.get('addr:postcode', '78701')
+                        phone = tags.get('phone', tags.get('contact:phone', 'N/A'))
+                        website = tags.get('website', tags.get('contact:website', ''))
+                        
+                        raw_text = f"Restaurant Name: {name} ({cuisine}), Address: {house} {street}, {city}, {state} {postcode}. Contact: {phone} Website: {website}"
+                        results.append({"raw_text": raw_text, "api_name": name, "api_phone": phone})
+                    return results
     except Exception:
         pass
         
@@ -186,8 +214,6 @@ def process_live_batch(records: List[Dict[str, str]], target_city: str) -> pd.Da
     
     processed = []
     for idx, text in enumerate(texts):
-        
-        # Granular NLP Classification
         cuisine_type = classify_cuisine_advanced(text)
         extracted_state = extract_state_contextual(text, target_city)
         
@@ -232,7 +258,7 @@ city_map = {
 selected_city = st.sidebar.selectbox("Select City:", city_map[selected_state])
 record_limit = st.sidebar.slider("Number of Records:", min_value=5, max_value=20, value=10)
 
-with st.spinner(f"Classifying listings for {selected_city}, {selected_state}..."):
+with st.spinner(f"Fetching listings for {selected_city}, {selected_state}..."):
     raw_api_data = fetch_live_restaurants(selected_city, selected_state, limit=record_limit)
 
 df_results = process_live_batch(raw_api_data, selected_city)
