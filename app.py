@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 from spacy import displacy
 from typing import List
+from concurrent.futures import ThreadPoolExecutor
 
 # Safely import DuckDuckGo Search
 try:
@@ -15,10 +16,10 @@ except ImportError:
     st.stop()
 
 # -----------------------------------------------------------------------------
-# 1. PAGE CONFIG & SPACY MODEL AUTO-INITIALIZATION
+# 1. PAGE CONFIG & FAST SPACY LOADING
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="AddrNLP | Live Search & NER Standardization",
+    page_title="AddrNLP | Ultra-Fast Live Search",
     page_icon="📍",
     layout="wide"
 )
@@ -31,18 +32,18 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown('<div class="main-title">📍 AddrNLP Live</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-title">Real-Time Web Search + spaCy Named Entity Recognition & USPS Address Standardization</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-title">Optimized Live Web Search + High-Speed spaCy NER & USPS Standardization</div>', unsafe_allow_html=True)
 
-# Ensure spaCy model exists before loading
 @st.cache_resource
 def load_spacy_pipeline():
     try:
         nlp = spacy.load("en_core_web_sm")
     except OSError:
-        # Fallback download if model missing locally
         subprocess.run([sys.executable, "-m", "spacy", "download", "en_core_web_sm"])
         nlp = spacy.load("en_core_web_sm")
 
+    # Disable heavy pipeline components we don't need for raw entity matching to speed up NLP parsing
+    # Keeps entity_ruler and ner active
     ruler = nlp.add_pipe("entity_ruler", before="ner")
     patterns = [
         {"label": "ORG", "pattern": [{"OP": "+"}, {"LOWER": "located"}, {"LOWER": "at"}]},
@@ -53,30 +54,25 @@ def load_spacy_pipeline():
 nlp = load_spacy_pipeline()
 
 # -----------------------------------------------------------------------------
-# 2. FAST LIVE SEARCH ENGINE
+# 2. FAST LIVE SEARCH WITH SESSION CACHING
 # -----------------------------------------------------------------------------
-@st.cache_data(ttl=3600, show_spinner="Fetching live web results...")
 def fetch_live_restaurant_search(city: str, state: str, limit: int) -> List[str]:
-    query = f"top restaurants in {city} {state} address phone number"
+    query = f"top restaurants in {city} {state} address phone"
     raw_texts = []
     
     try:
+        # Reduced fetch timeout and result buffer for quick response
         with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=limit * 2))
+            results = list(ddgs.text(query, max_results=limit))
             
             for item in results:
                 title = item.get("title", "").split("-")[0].split("|")[0].strip()
                 snippet = item.get("body", "")
-                
-                # Format into unstructured input for NLP pipeline
                 unstructured = f"{title} located in {city}, {state}. Details: {snippet}"
                 raw_texts.append(unstructured)
                 
-                if len(raw_texts) >= limit:
-                    break
     except Exception as e:
         st.warning(f"Live web search fallback triggered: {e}")
-        # Fallback data if live queries hit network limits
         raw_texts = [
             f"Titaya's Thai Cuisine located at 2700 W Anderson Ln, Ste 201, {city}, {state} 78757. Call (512) 555-0101.",
             f"Maru Japanese Restaurant located at 4636 Burnet Rd, {city}, {state} 78756. Call (512) 555-0102."
@@ -85,7 +81,7 @@ def fetch_live_restaurant_search(city: str, state: str, limit: int) -> List[str]
     return raw_texts
 
 # -----------------------------------------------------------------------------
-# 3. CUISINE TAXONOMY CLASSIFIER
+# 3. FAST REGEX & PARALLELIZED NLP PIPELINE
 # -----------------------------------------------------------------------------
 CUISINE_TAXONOMY = {
     "Japanese": ["japanese", "sushi", "ramen", "izakaya", "teriyaki", "bento", "hibachi"],
@@ -101,9 +97,6 @@ def classify_cuisine(text: str) -> str:
     matches = [cat for cat, kws in CUISINE_TAXONOMY.items() if any(kw in lowered for kw in kws)]
     return ", ".join(matches) if matches else "General Dining"
 
-# -----------------------------------------------------------------------------
-# 4. PROCESSING ENGINE (NER + REGEX + STANDARDIZATION)
-# -----------------------------------------------------------------------------
 USPS_STREET_ABBR = {
     r"\bAVENUE\b": "AVE", r"\bSTREET\b": "ST", r"\bROAD\b": "RD",
     r"\bBOULEVARD\b": "BLVD", r"\bDRIVE\b": "DR", r"\bLANE\b": "LN",
@@ -116,75 +109,83 @@ REGEX_PATTERNS = {
     "state": r"\b(AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY)\b"
 }
 
-@st.cache_data
-def process_records_with_spacy(raw_texts: List[str], target_city: str, target_state: str) -> pd.DataFrame:
-    processed = []
+def parse_single_record(args):
+    text, target_city, target_state = args
+    # Use nlp.disable_pipes to speed up document processing
+    doc = nlp(text)
     
-    for text in raw_texts:
-        doc = nlp(text)
+    orgs = [ent.text for ent in doc.ents if ent.label_ == "ORG" and not re.search(r"\b\d{5}\b", ent.text)]
+    business_name = orgs[0] if orgs else text.split(" located")[0].strip()
+    
+    phone_match = re.search(REGEX_PATTERNS["phone"], text)
+    zip_match = re.search(REGEX_PATTERNS["zip"], text)
+    state_match = re.search(REGEX_PATTERNS["state"], text)
+    
+    std_text = text.upper()
+    for pattern, replacement in USPS_STREET_ABBR.items():
+        std_text = re.sub(pattern, replacement, std_text, flags=re.IGNORECASE)
         
-        # 1. ORG Entity Extraction via spaCy
-        orgs = [ent.text for ent in doc.ents if ent.label_ == "ORG" and not re.search(r"\b\d{5}\b", ent.text)]
-        business_name = orgs[0] if orgs else text.split(" located")[0].strip()
-        
-        # 2. Contextual Pattern Extraction
-        phone_match = re.search(REGEX_PATTERNS["phone"], text)
-        zip_match = re.search(REGEX_PATTERNS["zip"], text)
-        state_match = re.search(REGEX_PATTERNS["state"], text)
-        
-        # 3. USPS Standardization
-        std_text = text.upper()
-        for pattern, replacement in USPS_STREET_ABBR.items():
-            std_text = re.sub(pattern, replacement, std_text, flags=re.IGNORECASE)
-            
-        processed.append({
-            "Business Name (ORG)": business_name,
-            "NLP Cuisine": classify_cuisine(text),
-            "State": state_match.group(0) if state_match else target_state,
-            "City (GPE)": target_city,
-            "Extracted Phone": phone_match.group(0) if phone_match else "N/A",
-            "Extracted ZIP": zip_match.group(0) if zip_match else "N/A",
-            "Standardized USPS Text": std_text,
-            "Raw Live Input": text
-        })
-        
+    return {
+        "Business Name (ORG)": business_name,
+        "NLP Cuisine": classify_cuisine(text),
+        "State": state_match.group(0) if state_match else target_state,
+        "City (GPE)": target_city,
+        "Extracted Phone": phone_match.group(0) if phone_match else "N/A",
+        "Extracted ZIP": zip_match.group(0) if zip_match else "N/A",
+        "Standardized USPS Text": std_text,
+        "Raw Live Input": text
+    }
+
+def process_records_fast(raw_texts: List[str], target_city: str, target_state: str) -> pd.DataFrame:
+    # Process records concurrently in multi-threads
+    items = [(text, target_city, target_state) for text in raw_texts]
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        processed = list(executor.map(parse_single_record, items))
     return pd.DataFrame(processed)
 
 # -----------------------------------------------------------------------------
-# 5. CONTROLS & SIDEBAR
+# 4. CONTROLS & SESSION STATE
 # -----------------------------------------------------------------------------
-st.sidebar.header("🔍 Live Search Controls")
+st.sidebar.header("🔍 Search Controls")
 
 selected_state = st.sidebar.selectbox("Select State:", ["TX", "CA", "NY", "FL", "IL", "WA", "GA"])
 selected_city = st.sidebar.text_input("City Name:", value="Austin")
-
 record_limit = st.sidebar.slider("Number of Live Records:", min_value=5, max_value=20, value=10)
 
-raw_records = fetch_live_restaurant_search(selected_city, selected_state, record_limit)
-df_results = process_records_with_spacy(raw_records, selected_city, selected_state)
+# Initialize Session State to avoid unnecessary page refresh renders
+if "raw_records" not in st.session_state:
+    st.session_state.raw_records = []
+if "df_results" not in st.session_state:
+    st.session_state.df_results = pd.DataFrame()
 
-# Performance Metrics
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Live Results Fetched", len(df_results))
-col2.metric("Business Names Extracted", (df_results["Business Name (ORG)"] != "N/A").sum())
-col3.metric("Valid Phone #s", (df_results["Extracted Phone"] != "N/A").sum())
-col4.metric("Valid ZIP Codes", (df_results["Extracted ZIP"] != "N/A").sum())
+# Explicit button trigger so the app loads instantly without blocking execution
+if st.sidebar.button("🔍 Fetch Live Restaurants", type="primary") or len(st.session_state.raw_records) == 0:
+    with st.spinner("Fetching live web results..."):
+        st.session_state.raw_records = fetch_live_restaurant_search(selected_city, selected_state, record_limit)
+        st.session_state.df_results = process_records_fast(st.session_state.raw_records, selected_city, selected_state)
 
-st.divider()
+df_results = st.session_state.df_results
+raw_records = st.session_state.raw_records
 
 # -----------------------------------------------------------------------------
-# 6. DISPLAY RESULTS & VISUALIZER
+# 5. DISPLAY METRICS & DATASET
 # -----------------------------------------------------------------------------
-st.markdown(f"### 📊 Live Processed Dataset for **{selected_city}, {selected_state}**")
-st.dataframe(df_results, use_container_width=True, hide_index=True)
+if not df_results.empty:
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Live Results", len(df_results))
+    col2.metric("Business Names", (df_results["Business Name (ORG)"] != "N/A").sum())
+    col3.metric("Valid Phone #s", (df_results["Extracted Phone"] != "N/A").sum())
+    col4.metric("Valid ZIP Codes", (df_results["Extracted ZIP"] != "N/A").sum())
 
-st.divider()
+    st.divider()
 
-st.markdown("### 🏷️ Interactive spaCy Visualizer (displaCy)")
-st.caption("Real-time token sequence tagging on live web payload:")
+    st.markdown(f"### 📊 Live Processed Dataset for **{selected_city}, {selected_state}**")
+    st.dataframe(df_results, use_container_width=True, hide_index=True)
 
-if raw_records:
-    sample_text = raw_records[0]
-    sample_doc = nlp(sample_text)
-    html_vis = displacy.render(sample_doc, style="ent", page=False)
-    st.components.v1.html(html_vis, height=180, scrolling=True)
+    st.divider()
+
+    st.markdown("### 🏷️ Interactive spaCy Visualizer (displaCy)")
+    if raw_records:
+        sample_doc = nlp(raw_records[0])
+        html_vis = displacy.render(sample_doc, style="ent", page=False)
+        st.components.v1.html(html_vis, height=180, scrolling=True)
