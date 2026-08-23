@@ -68,7 +68,7 @@ def classify_cuisine(text: str) -> str:
     return ", ".join(found_categories) if found_categories else "General Dining"
 
 # -----------------------------------------------------------------------------
-# 3. FALLBACK DATASET GENERATOR
+# 3. FALLBACK DATASET GENERATOR (EXPANDED TO 20 RECORDS)
 # -----------------------------------------------------------------------------
 def generate_fallback_data(city: str, state: str, limit: int) -> List[Dict[str, str]]:
     sample_places = [
@@ -82,6 +82,16 @@ def generate_fallback_data(city: str, state: str, limit: int) -> List[Dict[str, 
         ("Ramen Tatsu-Ya", "123 S 1st St", "Ste 10", "78704", "555-0111", "https://ramen-tatsuya.com", "Asian / Japanese"),
         ("The Daily Roast Cafe", "555 MLK Jr Blvd", "Apt 4A", "78701", "555-0133", "https://dailyroast.com", "Cafe & Bakery"),
         ("Blue Harbor Seafood", "101 Ocean Dr", "Unit 301", "78701", "555-0167", "https://blueharbor.org", "Steakhouse / Seafood"),
+        ("Luigi's Trattoria & Pizzeria", "150 Main St", "Suite B", "78701", "555-0210", "https://luigistrattoria.com", "Italian"),
+        ("El Sol Mexican Cantina", "820 S Congress Ave", "Ste 101", "78704", "555-0222", "https://elsolcantina.com", "Mexican"),
+        ("Prime Cut Steakhouse", "500 Downtown Blvd", "Floor 2", "78701", "555-0233", "https://primecutsteak.com", "Steakhouse / Seafood"),
+        ("Sakura Sushi & Noodle Bar", "901 W 6th St", "Unit 4", "78703", "555-0244", "https://sakurasushi.io", "Asian / Japanese"),
+        ("Sweet Wheat Bakery & Espresso", "1200 E 11th St", "Ste A", "78702", "555-0255", "https://sweetwheatbakery.com", "Cafe & Bakery"),
+        ("Smokey BBQ Pit & Grill", "3400 E MLK Jr Blvd", "Apt 1C", "78702", "555-0266", "https://smokeybbqpit.com", "Fast Food / Casual"),
+        ("Caffè Milano Espresso Bar", "220 Lamar Blvd", "Ste 300", "78704", "555-0277", "https://caffemilano.org", "Cafe & Bakery"),
+        ("Taco Town Express", "4500 N IH 35", "Bldg 3", "78751", "555-0288", "https://tacotownexpress.com", "Mexican"),
+        ("Golden Dragon Chinese & Dim Sum", "6700 N Lamar Blvd", "Ste 108", "78752", "555-0299", "https://goldendragonatx.com", "Asian / Japanese"),
+        ("Coastline Fish & Oyster Bar", "1100 Barton Springs Rd", "Ste 5", "78704", "555-0311", "https://coastlineoyster.com", "Steakhouse / Seafood")
     ]
     
     results = []
@@ -160,24 +170,17 @@ ALL_STATES = [
 ]
 
 def extract_state_contextual(text: str, target_city: str) -> str:
-    """
-    Extracts 2-letter state code using contextual rules:
-    1. Looks for exact uppercase state code following the city name.
-    2. Looks for exact uppercase state code preceding a 5-digit ZIP code.
-    """
+    """Extracts 2-letter state code using contextual rules."""
     states_pattern = "|".join(ALL_STATES)
     
-    # Context Rule A: City Name + optional comma/spaces + State Code (e.g., "Austin, TX")
     city_state_match = re.search(fr"{re.escape(target_city)},?\s+\b({states_pattern})\b", text, re.IGNORECASE)
     if city_state_match:
         return city_state_match.group(1).upper()
         
-    # Context Rule B: State Code + ZIP code (e.g., "TX 78701")
     state_zip_match = re.search(fr"\b({states_pattern})\b\s+\d{{5}}", text)
     if state_zip_match:
         return state_zip_match.group(1).upper()
         
-    # Context Rule C: Standalone strict uppercase state code boundary
     strict_match = re.search(fr"\b({states_pattern})\b", text)
     if strict_match:
         return strict_match.group(1)
@@ -192,18 +195,13 @@ def process_live_batch(records: List[Dict[str, str]], target_city: str) -> pd.Da
     for idx, doc in enumerate(docs):
         text = texts[idx]
         
-        # Custom NLP Cuisine Classification
         cuisine_type = classify_cuisine(text)
-        
-        # Contextual State Regex
         extracted_state = extract_state_contextual(text, target_city)
         
-        # Regex Parsing
         zip_match = re.search(REGEX_PATTERNS["zip_code"], text)
         phone_match = re.search(REGEX_PATTERNS["phone"], text)
         url_match = re.search(REGEX_PATTERNS["url"], text)
         
-        # Address Standardization
         std_text = text.upper()
         for pattern, replacement in USPS_STREET_ABBR.items():
             std_text = re.sub(pattern, replacement, std_text, flags=re.IGNORECASE)
