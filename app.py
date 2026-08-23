@@ -1,13 +1,21 @@
 import re
+import sys
 import spacy
+import subprocess
 import pandas as pd
 import streamlit as st
 from spacy import displacy
 from typing import List
-from duckduckgo_search import DDGS
+
+# Safely import DuckDuckGo Search
+try:
+    from duckduckgo_search import DDGS
+except ImportError:
+    st.error("Please install duckduckgo_search: `pip install duckduckgo_search`")
+    st.stop()
 
 # -----------------------------------------------------------------------------
-# 1. PAGE CONFIG & SPACY PIPELINE CACHING
+# 1. PAGE CONFIG & SPACY MODEL AUTO-INITIALIZATION
 # -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="AddrNLP | Live Search & NER Standardization",
@@ -25,10 +33,16 @@ st.markdown("""
 st.markdown('<div class="main-title">📍 AddrNLP Live</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-title">Real-Time Web Search + spaCy Named Entity Recognition & USPS Address Standardization</div>', unsafe_allow_html=True)
 
-# Cache spaCy model in memory so app re-runs remain instant
+# Ensure spaCy model exists before loading
 @st.cache_resource
 def load_spacy_pipeline():
-    nlp = spacy.load("en_core_web_sm")
+    try:
+        nlp = spacy.load("en_core_web_sm")
+    except OSError:
+        # Fallback download if model missing locally
+        subprocess.run([sys.executable, "-m", "spacy", "download", "en_core_web_sm"])
+        nlp = spacy.load("en_core_web_sm")
+
     ruler = nlp.add_pipe("entity_ruler", before="ner")
     patterns = [
         {"label": "ORG", "pattern": [{"OP": "+"}, {"LOWER": "located"}, {"LOWER": "at"}]},
@@ -39,11 +53,10 @@ def load_spacy_pipeline():
 nlp = load_spacy_pipeline()
 
 # -----------------------------------------------------------------------------
-# 2. FAST LIVE SEARCH ENGINE (DuckDuckGo API)
+# 2. FAST LIVE SEARCH ENGINE
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=3600, show_spinner="Fetching live web results...")
 def fetch_live_restaurant_search(city: str, state: str, limit: int) -> List[str]:
-    """Queries live web search for restaurant listings and builds unstructured text streams."""
     query = f"top restaurants in {city} {state} address phone number"
     raw_texts = []
     
@@ -55,15 +68,15 @@ def fetch_live_restaurant_search(city: str, state: str, limit: int) -> List[str]
                 title = item.get("title", "").split("-")[0].split("|")[0].strip()
                 snippet = item.get("body", "")
                 
-                # Format into raw unstructured input for our NLP pipeline
+                # Format into unstructured input for NLP pipeline
                 unstructured = f"{title} located in {city}, {state}. Details: {snippet}"
                 raw_texts.append(unstructured)
                 
                 if len(raw_texts) >= limit:
                     break
     except Exception as e:
-        st.warning(f"Live search fallback triggered due to rate limit/network: {e}")
-        # Graceful fallback if web access fails
+        st.warning(f"Live web search fallback triggered: {e}")
+        # Fallback data if live queries hit network limits
         raw_texts = [
             f"Titaya's Thai Cuisine located at 2700 W Anderson Ln, Ste 201, {city}, {state} 78757. Call (512) 555-0101.",
             f"Maru Japanese Restaurant located at 4636 Burnet Rd, {city}, {state} 78756. Call (512) 555-0102."
@@ -142,12 +155,11 @@ def process_records_with_spacy(raw_texts: List[str], target_city: str, target_st
 # -----------------------------------------------------------------------------
 st.sidebar.header("🔍 Live Search Controls")
 
-selected_state = st.sidebar.selectbox("Select State:", ["TX", "CA", "NY", "FL", "IL", "WA", "FL", "GA"])
+selected_state = st.sidebar.selectbox("Select State:", ["TX", "CA", "NY", "FL", "IL", "WA", "GA"])
 selected_city = st.sidebar.text_input("City Name:", value="Austin")
 
 record_limit = st.sidebar.slider("Number of Live Records:", min_value=5, max_value=20, value=10)
 
-# Fetch Live Search & Process
 raw_records = fetch_live_restaurant_search(selected_city, selected_state, record_limit)
 df_results = process_records_with_spacy(raw_records, selected_city, selected_state)
 
