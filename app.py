@@ -25,19 +25,8 @@ st.markdown('<div class="main-title">📍 AddrNLP</div>', unsafe_allow_html=True
 st.markdown('<div class="sub-title">Rule-Based NLP Cuisine Classifier + Contextual Regex Address Parsing</div>', unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# 2. SPACY & ENHANCED CUISINE TAXONOMY CLASSIFIER
+# 2. CUISINE TAXONOMY CLASSIFIER
 # -----------------------------------------------------------------------------
-@st.cache_resource
-def load_spacy_pipeline():
-    try:
-        return spacy.load("en_core_web_sm", disable=["parser", "lemmatizer", "textcat"])
-    except OSError:
-        from spacy.cli import download
-        download("en_core_web_sm")
-        return spacy.load("en_core_web_sm", disable=["parser", "lemmatizer", "textcat"])
-
-nlp = load_spacy_pipeline()
-
 CUISINE_TAXONOMY = {
     "Japanese": ["japanese", "sushi", "ramen", "izakaya", "teriyaki", "maru", "bento", "hibachi", "sakura", "kata robata"],
     "Thai": ["thai", "pad thai", "curry", "bangkok", "siam", "titaya"],
@@ -48,7 +37,7 @@ CUISINE_TAXONOMY = {
     "Fast Food & Casual": ["burger", "burgers", "wings", "deli", "sandwich", "bbq", "smokey", "killen"]
 }
 
-def classify_cuisine_advanced(text: str) -> str:
+def classify_cuisine_fast(text: str) -> str:
     lowered_text = text.lower()
     matched_categories = []
     
@@ -62,7 +51,7 @@ def classify_cuisine_advanced(text: str) -> str:
     return ", ".join(matched_categories) if matched_categories else "General Dining"
 
 # -----------------------------------------------------------------------------
-# 3. CITY-SPECIFIC LOCALIZED DATASETS (FALLBACK)
+# 3. LOCAL SEED DATASETS
 # -----------------------------------------------------------------------------
 CITY_LOCAL_RESTAURANTS = {
     "Austin": [
@@ -88,24 +77,6 @@ CITY_LOCAL_RESTAURANTS = {
         ("Coltivare Italian Rustic Bistro", "3320 White Oak Dr", "Unit B", "77007", "713-637-4095", "https://www.agricolehospitality.com"),
         ("Vic & Anthony's Steakhouse", "1510 Texas Ave", "Fl 1", "77002", "713-228-1111", "https://www.vicandanthonys.com"),
         ("Snooze A.M. Eatery Breakfast", "3217 Montrose Blvd", "Ste 100", "77006", "713-574-6710", "https://snoozeeatery.com")
-    ],
-    "Dallas": [
-        ("The Henry American Bistro", "2301 N Akard St", "Ste 250", "75201", "972-677-9560", "https://www.thehenryrestaurant.com"),
-        ("Dragonfly Asian & Fusion", "2332 Leonard St", "Suite 1", "75201", "214-550-9500", "https://www.hotelzaza.com"),
-        ("The Woolworth Craft Cocktail Bar", "1520 Elm St", "Suite 201", "75201", "214-814-0588", "https://www.thewoolworthdallas.com"),
-        ("The Hampton Social Seafood", "1520 Main St", "Fl 1", "75201", "469-498-9890", "https://www.thehamptonsocial.com")
-    ],
-    "Los Angeles": [
-        ("Girl & the Goat LA", "555-3 Mateo St", "Ste 100", "90013", "213-799-4628", "http://girlandthegoat.com"),
-        ("Redbird New American Bistro", "114 E 2nd St", "Ste B", "90012", "213-788-1191", "https://redbird.la"),
-        ("Holbox Mexican Seafood", "3655 S Grand Ave", "c9", "90007", "213-986-9972", "http://www.holboxla.com"),
-        ("République Bakery & Cafe", "624 S La Brea Ave", "Suite 12", "90036", "310-362-6115", "http://www.republiquela.com")
-    ],
-    "Chicago": [
-        ("Girl & The Goat Chicago", "809 W Randolph St", "Fl 1", "60607", "312-492-6262", "http://www.girlandthegoat.com"),
-        ("River Roast Tavern", "315 N LaSalle St", "Ste 10", "60654", "312-822-0100", "https://www.riverroastchicago.com"),
-        ("Aba Mediterranean Grill", "302 N Green St", "3rd Floor", "60607", "773-645-1400", "http://www.abarestaurants.com"),
-        ("Alla Vita Italian Kitchen", "564 W Randolph St", "Suite A", "60661", "312-667-0104", "https://www.allavitachicago.com")
     ]
 }
 
@@ -124,29 +95,28 @@ def generate_fallback_data(city: str, state: str, limit: int) -> List[Dict[str, 
     return results
 
 # -----------------------------------------------------------------------------
-# 4. DEDUPLICATED OVERPASS API INTEGRATION
+# 4. OPTIMIZED DATA FETCHING WITH AGGRESIVE CACHING
 # -----------------------------------------------------------------------------
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_live_restaurants(city: str, state: str, limit: int = 10) -> List[Dict[str, str]]:
-    headers = {"User-Agent": "AddrNLP_Streamlit_App/1.0"}
+    headers = {"User-Agent": "AddrNLP_Streamlit_App/2.0"}
     
     try:
         geo_url = f"https://nominatim.openstreetmap.org/search?city={city}&state={state}&country=USA&format=json"
-        geo_resp = requests.get(geo_url, headers=headers, timeout=4)
+        geo_resp = requests.get(geo_url, headers=headers, timeout=2.0)
         
         if geo_resp.status_code == 200 and len(geo_resp.json()) > 0:
             lat = float(geo_resp.json()[0]["lat"])
             lon = float(geo_resp.json()[0]["lon"])
             
             overpass_url = "https://overpass-api.de/api/interpreter"
-            # Request up to 50 raw elements to ensure enough remain after phone deduplication
             bbox_query = f"""
-            [out:json][timeout:10];
-            node["amenity"="restaurant"]({lat-0.1},{lon-0.1},{lat+0.1},{lon+0.1});
-            out tags 50;
+            [out:json][timeout:4];
+            node["amenity"="restaurant"]({lat-0.08},{lon-0.08},{lat+0.08},{lon+0.08});
+            out tags 35;
             """
             
-            response = requests.get(overpass_url, params={'data': bbox_query}, headers=headers, timeout=6)
+            response = requests.get(overpass_url, params={'data': bbox_query}, headers=headers, timeout=3.0)
             if response.status_code == 200 and "application/json" in response.headers.get("Content-Type", ""):
                 data = response.json()
                 elements = data.get('elements', [])
@@ -158,10 +128,7 @@ def fetch_live_restaurants(city: str, state: str, limit: int = 10) -> List[Dict[
                         tags = elem.get('tags', {})
                         phone = tags.get('phone', tags.get('contact:phone', 'N/A'))
                         
-                        # Normalize phone string to extract digit sequence
                         clean_digits = re.sub(r"\D", "", phone)
-                        
-                        # Deduplicate entries with valid 10+ digit phones
                         if len(clean_digits) >= 10:
                             if clean_digits in seen_phones:
                                 continue
@@ -188,7 +155,7 @@ def fetch_live_restaurants(city: str, state: str, limit: int = 10) -> List[Dict[
     return generate_fallback_data(city, state, limit)
 
 # -----------------------------------------------------------------------------
-# 5. EXTRACTION & STANDARDIZATION ENGINE
+# 5. FAST EXTRACTION ENGINE
 # -----------------------------------------------------------------------------
 USPS_STREET_ABBR = {
     r"\bAVENUE\b": "AVE", r"\bAVE\.\b": "AVE",
@@ -222,31 +189,26 @@ def extract_state_contextual(text: str, target_city: str) -> str:
     if state_zip_match:
         return state_zip_match.group(1).upper()
         
-    strict_match = re.search(fr"\b({states_pattern})\b", text)
-    if strict_match:
-        return strict_match.group(1)
-        
     return "N/A"
 
+@st.cache_data(show_spinner=False)
 def process_live_batch(records: List[Dict[str, str]], target_city: str) -> pd.DataFrame:
-    texts = [r["raw_text"] for r in records]
-    
     processed = []
     seen_phones = set()
     record_id = 1
     
-    for idx, text in enumerate(texts):
+    for idx, r in enumerate(records):
+        text = r["raw_text"]
         phone_match = re.search(REGEX_PATTERNS["phone"], text)
-        raw_phone = phone_match.group(0) if phone_match else records[idx]["api_phone"]
+        raw_phone = phone_match.group(0) if phone_match else r["api_phone"]
         
-        # Additional safety check for deduplication at batch processing time
         clean_digits = re.sub(r"\D", "", raw_phone)
         if len(clean_digits) >= 10:
             if clean_digits in seen_phones:
                 continue
             seen_phones.add(clean_digits)
             
-        cuisine_type = classify_cuisine_advanced(text)
+        cuisine_type = classify_cuisine_fast(text)
         extracted_state = extract_state_contextual(text, target_city)
         zip_match = re.search(REGEX_PATTERNS["zip_code"], text)
         url_match = re.search(REGEX_PATTERNS["url"], text)
@@ -273,37 +235,40 @@ def process_live_batch(records: List[Dict[str, str]], target_city: str) -> pd.Da
     return pd.DataFrame(processed)
 
 # -----------------------------------------------------------------------------
-# 6. DYNAMIC UI & CONTROLS
+# 6. DYNAMIC UI & CONTROLS WITH FORM SUBMISSION
 # -----------------------------------------------------------------------------
 st.sidebar.header("🌍 Dynamic Location Controls")
 
-selected_state = st.sidebar.selectbox("Select State:", ["TX", "CA", "NY", "IL", "FL"])
-city_map = {
-    "TX": ["Austin", "Houston", "Dallas"],
-    "CA": ["Los Angeles", "San Francisco", "San Diego"],
-    "NY": ["New York", "Buffalo", "Rochester"],
-    "IL": ["Chicago", "Springfield", "Peoria"],
-    "FL": ["Miami", "Orlando", "Tampa"]
-}
+with st.sidebar.form("filter_form"):
+    selected_state = st.selectbox("Select State:", ["TX", "CA", "NY", "IL", "FL"])
+    city_map = {
+        "TX": ["Austin", "Houston", "Dallas"],
+        "CA": ["Los Angeles", "San Francisco", "San Diego"],
+        "NY": ["New York", "Buffalo", "Rochester"],
+        "IL": ["Chicago", "Springfield", "Peoria"],
+        "FL": ["Miami", "Orlando", "Tampa"]
+    }
 
-selected_city = st.sidebar.selectbox("Select City:", city_map[selected_state])
-record_limit = st.sidebar.slider("Number of Records:", min_value=5, max_value=20, value=10)
+    selected_city = st.selectbox("Select City:", city_map[selected_state])
+    record_limit = st.slider("Number of Records:", min_value=5, max_value=20, value=10)
+    
+    # Form submission prevents page execution on every slider drag
+    submit_button = st.form_submit_button("Apply Filters")
 
-with st.spinner(f"Fetching listings for {selected_city}, {selected_state}..."):
+with st.spinner(f"Loading data for {selected_city}, {selected_state}..."):
     raw_api_data = fetch_live_restaurants(selected_city, selected_state, limit=record_limit)
+    df_results = process_live_batch(raw_api_data, selected_city)
 
-df_results = process_live_batch(raw_api_data, selected_city)
-
-# Calculate both total classified records and distinct category types
+# Metric Calculations
 classified_count = (df_results["NLP Cuisine Category"] != "General Dining").sum()
 unique_categories = df_results[df_results["NLP Cuisine Category"] != "General Dining"]["NLP Cuisine Category"].nunique()
 
 col1, col2, col3, col4, col5 = st.columns(5)
-col1.metric("Total Unique Records", len(df_results))
-col2.metric("Classified Records", classified_count)
+col1.metric("Total Records", len(df_results))
+col2.metric("Classified", classified_count)
 col3.metric("Unique Cuisines", unique_categories)
-col4.metric("Phones Extracted", (df_results["Extracted Phone"] != "N/A").sum())
-col5.metric("Valid ZIPs Parsed", (df_results["Regex ZIP"] != "N/A").sum())
+col4.metric("Phones", (df_results["Extracted Phone"] != "N/A").sum())
+col5.metric("Valid ZIPs", (df_results["Regex ZIP"] != "N/A").sum())
 
 st.divider()
 
