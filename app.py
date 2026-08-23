@@ -5,10 +5,10 @@ import spacy
 from typing import Dict, Any
 
 # -----------------------------------------------------------------------------
-# 1. PAGE CONFIGURATION & BRANDING
+# 1. PAGE CONFIG & BRANDING
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="AddrNLP | Address Standardization & Extraction Engine",
+    page_title="AddrNLP | Address Standardization Engine",
     page_icon="📍",
     layout="wide"
 )
@@ -21,30 +21,29 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown('<div class="main-title">📍 AddrNLP</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-title">Hybrid NLP Pipeline: spaCy NER + Advanced Regex Address Standardization</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-title">Hybrid Pipeline: Fast Regex + Contextual spaCy NER</div>', unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# 2. LOAD SPACY MODEL WITH CACHING
+# 2. CACHED SPACY MODEL (DISABLE UNNEEDED PIPELINE COMPONENTS)
 # -----------------------------------------------------------------------------
 @st.cache_resource
 def load_spacy_nlp():
-    """Loads and caches the spaCy English model to avoid reloading on user interactions."""
+    """Loads spaCy with only NER enabled for maximum inference speed."""
     try:
-        return spacy.load("en_core_web_sm")
+        # Disable parser and lemmatizer to speed up inference dramatically
+        return spacy.load("en_core_web_sm", disable=["parser", "lemmatizer", "textcat"])
     except OSError:
-        # Fallback handling if model is not pre-installed
         from spacy.cli import download
         download("en_core_web_sm")
-        return spacy.load("en_core_web_sm")
+        return spacy.load("en_core_web_sm", disable=["parser", "lemmatizer", "textcat"])
 
 nlp = load_spacy_nlp()
 
 # -----------------------------------------------------------------------------
-# 3. DATA GENERATOR (100 Messy Records)
+# 3. SYNTHETIC DATASET GENERATOR
 # -----------------------------------------------------------------------------
 @st.cache_data
 def generate_messy_addresses() -> pd.DataFrame:
-    """Generates 100 realistic, messy raw address strings for extraction and cleaning."""
     raw_samples = [
         "Contact JOHN DOE at 123 North Main St, Apt 4B, New York, NY 10001, phone 555-0192 or john@example.com",
         "Ship to ACME CORP, 456 WEST 5TH AVENUE, SUITE 100, AUSTIN TX 78701 (RECV: Jane Smith)",
@@ -92,7 +91,7 @@ def generate_messy_addresses() -> pd.DataFrame:
     return pd.DataFrame(records)
 
 # -----------------------------------------------------------------------------
-# 4. HYBRID NLP ENGINE (SPACY NER + REGEX)
+# 4. EXTRACTION ENGINE (FAST REGEX + BATCH SPACY)
 # -----------------------------------------------------------------------------
 USPS_STREET_ABBR = {
     r"\bAVENUE\b": "AVE", r"\bAVE\.\b": "AVE",
@@ -116,117 +115,74 @@ REGEX_PATTERNS = {
     "email": r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"
 }
 
-def extract_hybrid(text: str) -> Dict[str, Any]:
-    """Combines spaCy Named Entity Recognition with deterministic Regex patterns."""
-    # 1. spaCy NER Processing
-    doc = nlp(text)
+# CACHE THE FULL BATCH PROCESSING RESULT
+@st.cache_data
+def process_entire_dataset() -> pd.DataFrame:
+    """Executes spaCy nlp.pipe() and Regex standardization in a cached single pass."""
+    df = generate_messy_addresses()
+    texts = df["raw_text"].tolist()
     
-    persons = [ent.text for ent in doc.ents if ent.label_ == "PERSON"]
-    orgs = [ent.text for ent in doc.ents if ent.label_ == "ORG"]
-    gpes = [ent.text for ent in doc.ents if ent.label_ == "GPE"]  # Geopolitical entities (cities, states)
-
-    spacy_person = ", ".join(persons) if persons else "N/A"
-    spacy_org = ", ".join(orgs) if orgs else "N/A"
-    spacy_gpe = ", ".join(gpes) if gpes else "N/A"
-
-    # 2. Regex Extraction
-    zip_match = re.search(REGEX_PATTERNS["zip_code"], text)
-    state_match = re.search(REGEX_PATTERNS["state"], text, re.IGNORECASE)
-    phone_match = re.search(REGEX_PATTERNS["phone"], text)
-    email_match = re.search(REGEX_PATTERNS["email"], text)
-
-    zip_code = zip_match.group(0) if zip_match else "N/A"
-    state = state_match.group(0).upper() if state_match else "N/A"
-    phone = phone_match.group(0) if phone_match else "N/A"
-    email = email_match.group(0) if email_match else "N/A"
-
-    # 3. Address Standardization
-    standardized_text = text.upper()
-    for pattern, replacement in USPS_STREET_ABBR.items():
-        standardized_text = re.sub(pattern, replacement, standardized_text, flags=re.IGNORECASE)
+    # 1. High-speed batch processing with spaCy nlp.pipe()
+    docs = list(nlp.pipe(texts, batch_size=50))
     
-    clean_address = re.sub(REGEX_PATTERNS["email"], "", standardized_text)
-    clean_address = re.sub(REGEX_PATTERNS["phone"], "", clean_address)
-    clean_address = re.sub(r"\s+", " ", clean_address).strip()
+    processed = []
+    for idx, doc in enumerate(docs):
+        text = texts[idx]
+        
+        persons = [ent.text for ent in doc.ents if ent.label_ == "PERSON"]
+        orgs = [ent.text for ent in doc.ents if ent.label_ == "ORG"]
+        gpes = [ent.text for ent in doc.ents if ent.label_ == "GPE"]
 
-    return {
-        "spaCy PERSON": spacy_person,
-        "spaCy ORG": spacy_org,
-        "spaCy GPE": spacy_gpe,
-        "Regex Phone": phone,
-        "Regex Email": email,
-        "Regex State": state,
-        "Regex ZIP": zip_code,
-        "Standardized Address": clean_address
-    }
+        # 2. Regex parsing
+        zip_match = re.search(REGEX_PATTERNS["zip_code"], text)
+        state_match = re.search(REGEX_PATTERNS["state"], text, re.IGNORECASE)
+        phone_match = re.search(REGEX_PATTERNS["phone"], text)
+        email_match = re.search(REGEX_PATTERNS["email"], text)
+
+        # 3. Standardization
+        standardized_text = text.upper()
+        for pattern, replacement in USPS_STREET_ABBR.items():
+            standardized_text = re.sub(pattern, replacement, standardized_text, flags=re.IGNORECASE)
+        
+        clean_address = re.sub(REGEX_PATTERNS["email"], "", standardized_text)
+        clean_address = re.sub(REGEX_PATTERNS["phone"], "", clean_address)
+        clean_address = re.sub(r"\s+", " ", clean_address).strip()
+
+        processed.append({
+            "id": df.iloc[idx]["id"],
+            "raw_text": text,
+            "spaCy PERSON": ", ".join(persons) if persons else "N/A",
+            "spaCy ORG": ", ".join(orgs) if orgs else "N/A",
+            "spaCy GPE": ", ".join(gpes) if gpes else "N/A",
+            "Regex Phone": phone_match.group(0) if phone_match else "N/A",
+            "Regex Email": email_match.group(0) if email_match else "N/A",
+            "Regex State": state_match.group(0).upper() if state_match else "N/A",
+            "Regex ZIP": zip_match.group(0) if zip_match else "N/A",
+            "Standardized Address": clean_address
+        })
+
+    return pd.DataFrame(processed)
 
 # -----------------------------------------------------------------------------
-# 5. SIDEBAR & DATA PIPELINE
+# 5. STREAMLIT UI (INSTANT LOADING)
 # -----------------------------------------------------------------------------
-st.sidebar.header("⚙️ AddrNLP Controls")
+st.sidebar.header("⚙️ Controls")
 search_term = st.sidebar.text_input("Filter Raw Text Records:", "")
 
-df_raw = generate_messy_addresses()
-
-processed_records = []
-for _, row in df_raw.iterrows():
-    extracted = extract_hybrid(row["raw_text"])
-    processed_records.append({**row, **extracted})
-
-df_processed = pd.DataFrame(processed_records)
+# Fetch cached dataset instantly
+df_processed = process_entire_dataset()
 
 if search_term:
     df_processed = df_processed[df_processed["raw_text"].str.contains(search_term, case=False)]
 
-# -----------------------------------------------------------------------------
-# 6. DASHBOARD METRICS & DATA TABLE
-# -----------------------------------------------------------------------------
+# Metric Row
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("Batch Records", len(df_processed))
-col2.metric("Persons Detected (spaCy)", (df_processed["spaCy PERSON"] != "N/A").sum())
-col3.metric("Orgs Detected (spaCy)", (df_processed["spaCy ORG"] != "N/A").sum())
-col4.metric("Valid ZIPs (Regex)", (df_processed["Regex ZIP"] != "N/A").sum())
+col2.metric("Persons Detected", (df_processed["spaCy PERSON"] != "N/A").sum())
+col3.metric("Orgs Detected", (df_processed["spaCy ORG"] != "N/A").sum())
+col4.metric("Valid ZIPs", (df_processed["Regex ZIP"] != "N/A").sum())
 
 st.divider()
 
-st.markdown("### 📊 Extracted Dataset (spaCy NER + Regex)")
-st.dataframe(
-    df_processed[[
-        "id", "raw_text", "spaCy PERSON", "spaCy ORG", "spaCy GPE",
-        "Regex Phone", "Regex Email", "Regex State", "Regex ZIP", "Standardized Address"
-    ]],
-    use_container_width=True
-)
-
-st.divider()
-
-# -----------------------------------------------------------------------------
-# 7. INTERACTIVE PLAYGROUND WITH SPACY VISUALIZER
-# -----------------------------------------------------------------------------
-st.markdown("### 🧪 Live Hybrid Pipeline Inspector")
-st.write("Enter text below to inspect spaCy's native entity tags alongside the extracted and standardized regex output:")
-
-user_input = st.text_area(
-    "Enter Raw Input Text:", 
-    value="Ship to ACME CORP in Chicago, IL. Attn: Jane Smith - 456 WEST 5TH AVENUE, SUITE 100, AUSTIN TX 78701 (phone 555-0192, email: jsmith@acme.com)"
-)
-
-if user_input:
-    # 1. Direct Pipeline Output Table
-    res = extract_hybrid(user_input)
-    res_df = pd.DataFrame([res]).T.reset_index()
-    res_df.columns = ["Extraction / Standardization Field", "Parsed Result"]
-    
-    col_left, col_right = st.columns([1, 1])
-    
-    with col_left:
-        st.markdown("**Structured Extraction Output**")
-        st.table(res_df)
-        
-    with col_right:
-        st.markdown("**spaCy Visual Entity Tokenizer**")
-        doc_user = nlp(user_input)
-        
-        # Render visual entity highlights in Streamlit
-        html_ner = spacy.displacy.render(doc_user, style="ent", page=False)
-        st.components.v1.html(html_ner, height=250, scrolling=True)
+st.markdown("### 📊 Extracted & Standardized Dataset")
+st.dataframe(df_processed, use_container_width=True)
