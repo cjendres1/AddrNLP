@@ -294,11 +294,16 @@ with st.spinner(f"Fetching listings for {selected_city}, {selected_state}..."):
 
 df_results = process_live_batch(raw_api_data, selected_city)
 
-col1, col2, col3, col4 = st.columns(4)
+# Calculate both total classified records and distinct category types
+classified_count = (df_results["NLP Cuisine Category"] != "General Dining").sum()
+unique_categories = df_results[df_results["NLP Cuisine Category"] != "General Dining"]["NLP Cuisine Category"].nunique()
+
+col1, col2, col3, col4, col5 = st.columns(5)
 col1.metric("Total Unique Records", len(df_results))
-col2.metric("Categories Identified", (df_results["NLP Cuisine Category"] != "General Dining").sum())
-col3.metric("Phones Extracted", (df_results["Extracted Phone"] != "N/A").sum())
-col4.metric("Valid ZIPs Parsed", (df_results["Regex ZIP"] != "N/A").sum())
+col2.metric("Classified Records", classified_count)
+col3.metric("Unique Cuisines", unique_categories)
+col4.metric("Phones Extracted", (df_results["Extracted Phone"] != "N/A").sum())
+col5.metric("Valid ZIPs Parsed", (df_results["Regex ZIP"] != "N/A").sum())
 
 st.divider()
 
