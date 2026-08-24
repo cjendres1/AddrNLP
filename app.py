@@ -702,128 +702,6 @@ def fetch_live_restaurant_search(
 # 9. RESTAURANT CANDIDATE EXTRACTION
 # =============================================================================
 
-def clean_candidate_name(name: str) -> str:
-
-    name = name.strip()
-
-    # Remove common search-result separators.
-    name = re.split(
-        r"\s+[|•]\s+",
-        name,
-        maxsplit=1,
-    )[0]
-
-    # Remove common trailing descriptors.
-    name = re.sub(
-        r"\s*[-–—]\s*"
-        r"(restaurant|menu|official site|"
-        r"official website|"
-        r"reviews|hours|"
-        r"baltimore|austin|houston|"
-        r"new york).*$",
-        "",
-        name,
-        flags=re.IGNORECASE,
-    )
-
-    return name.strip(" -–—|•")
-
-
-def score_candidate(
-    candidate: str,
-    result: Dict[str, str],
-    source_text: str,
-) -> Tuple[int, List[str]]:
-
-    score = 0
-    reasons = []
-
-    normalized = normalize_name(candidate)
-
-    if is_bad_candidate(candidate):
-        return -100, ["Rejected as directory/generic result"]
-
-    # -------------------------------------------------------------------------
-    # Positive evidence
-    # -------------------------------------------------------------------------
-
-    if len(candidate.split()) >= 2:
-        score += 2
-        reasons.append("multi-word business name")
-
-    restaurant_terms = [
-        "restaurant",
-        "cafe",
-        "café",
-        "bistro",
-        "grill",
-        "kitchen",
-        "diner",
-        "steakhouse",
-        "bakery",
-        "pizzeria",
-        "taqueria",
-        "bar",
-        "brewery",
-    ]
-
-    if any(
-        term in source_text.lower()
-        for term in restaurant_terms
-    ):
-        score += 2
-        reasons.append("restaurant context")
-
-    if PHONE_PATTERN.search(source_text):
-        score += 2
-        reasons.append("phone number found")
-
-    if ADDRESS_PATTERN.search(source_text):
-        score += 3
-        reasons.append("street address found")
-
-    if ZIP_PATTERN.search(source_text):
-        score += 1
-        reasons.append("ZIP code found")
-
-    cuisine = classify_cuisine(source_text)
-
-    if cuisine != "General Dining":
-        score += 2
-        reasons.append("cuisine context")
-
-    # -------------------------------------------------------------------------
-    # Search-result source
-    # -------------------------------------------------------------------------
-
-    if domain_is_directory(
-        result.get("url", "")
-    ):
-        score -= 1
-        reasons.append("directory/listing source")
-
-    else:
-        score += 2
-        reasons.append("non-directory source")
-
-    # -------------------------------------------------------------------------
-    # Penalize obviously generic candidates
-    # -------------------------------------------------------------------------
-
-    if normalized in {
-        "tripadvisor",
-        "yelp",
-        "opentable",
-        "resy",
-        "facebook",
-        "instagram",
-        "restaurant guru",
-    }:
-        return -100, ["Known directory/social platform"]
-
-    return score, reasons
-
-
 def extract_restaurant_candidates(
     result: Dict[str, str],
     target_city: str,
@@ -832,17 +710,14 @@ def extract_restaurant_candidates(
     title = result.get("title", "")
     body = result.get("body", "")
 
-    source_text = (
-        f"{title}. "
-        f"{body}"
-    )
+    source_text = f"{title}. {body}"
 
     doc = nlp(source_text)
 
     candidates = []
 
     # -------------------------------------------------------------------------
-    # Candidate source 1: spaCy ORG
+    # Candidate 1: spaCy ORG entities
     # -------------------------------------------------------------------------
 
     for ent in doc.ents:
@@ -850,9 +725,10 @@ def extract_restaurant_candidates(
         if ent.label_ != "ORG":
             continue
 
-        candidate = clean_candidate_name(
-            ent.text
-        )
+        candidate = clean_candidate_name(ent.text)
+
+        if is_bad_candidate(candidate):
+            continue
 
         score, reasons = score_candidate(
             candidate,
@@ -870,44 +746,84 @@ def extract_restaurant_candidates(
         )
 
     # -------------------------------------------------------------------------
-    # Candidate source 2: Search-result title
+    # Candidate 2: search result title
     #
-    # A title such as:
-    #
-    #     Clavel Baltimore | Mexican Restaurant
-    #
-    # can be a useful candidate even if spaCy does not recognize "Clavel"
-    # as ORG.
+    # This is important. Many restaurant names will NOT be tagged as ORG by
+    # the small spaCy model.
     # -------------------------------------------------------------------------
 
     if title:
 
-        title_candidate = clean_candidate_name(
-            title
-        )
+        title_candidate = clean_candidate_name(title)
 
-        score, reasons = score_candidate(
-            title_candidate,
-            result,
-            source_text,
-        )
+        if not is_bad_candidate(title_candidate):
 
-        score -= 1
-        reasons.append(
-            "title-derived candidate"
-        )
+            score, reasons = score_candidate(
+                title_candidate,
+                result,
+                source_text,
+            )
 
-        candidates.append(
-            {
-                "candidate": title_candidate,
-                "score": score,
-                "reasons": reasons,
-                "source": "search title",
-            }
-        )
+            # Do NOT heavily penalize title-derived candidates.
+            # The title is often the best source for the restaurant name.
+            reasons.append("search-result title")
+
+            candidates.append(
+                {
+                    "candidate": title_candidate,
+                    "score": score,
+                    "reasons": reasons,
+                    "source": "search title",
+                }
+            )
 
     # -------------------------------------------------------------------------
-    # Remove duplicates within this result.
+    # Candidate 3: Look for "Restaurant Name - description" patterns.
+    # -------------------------------------------------------------------------
+
+    if title:
+
+        title_parts = re.split(
+            r"\s+[|•–—-]\s+",
+            title,
+        )
+
+        for part in title_parts:
+
+            candidate = clean_candidate_name(part)
+
+            if (
+                not candidate
+                or is_bad_candidate(candidate)
+            ):
+                continue
+
+            # Ignore very generic fragments.
+            if len(candidate.split()) > 8:
+                continue
+
+            score, reasons = score_candidate(
+                candidate,
+                result,
+                source_text,
+            )
+
+            score += 1
+            reasons.append(
+                "title component"
+            )
+
+            candidates.append(
+                {
+                    "candidate": candidate,
+                    "score": score,
+                    "reasons": reasons,
+                    "source": "title component",
+                }
+            )
+
+    # -------------------------------------------------------------------------
+    # Deduplicate candidates from this search result.
     # -------------------------------------------------------------------------
 
     unique = {}
@@ -947,10 +863,11 @@ def choose_best_candidate(
     )
 
     if not candidates:
+
         return (
             "Unknown Restaurant",
             0,
-            "No valid restaurant candidate",
+            "No candidate generated",
         )
 
     candidates.sort(
@@ -960,12 +877,16 @@ def choose_best_candidate(
 
     best = candidates[0]
 
-    if best["score"] < 3:
-        return (
-            "Unknown Restaurant",
-            best["score"],
-            "Candidate confidence too low",
-        )
+    # -------------------------------------------------------------------------
+    # IMPORTANT:
+    #
+    # We no longer require a score >= 3.
+    #
+    # A legitimate restaurant can have a relatively weak score simply because
+    # the search snippet contains very little information.
+    #
+    # The filtering above already eliminates obvious directory names.
+    # -------------------------------------------------------------------------
 
     return (
         best["candidate"],
@@ -1040,21 +961,10 @@ def parse_restaurant_record(
     # Regex extraction
     # -------------------------------------------------------------------------
 
-    phone_match = PHONE_PATTERN.search(
-        raw_text
-    )
-
-    zip_match = ZIP_PATTERN.search(
-        raw_text
-    )
-
-    address_match = ADDRESS_PATTERN.search(
-        raw_text
-    )
-
-    state_match = STATE_PATTERN.search(
-        raw_text
-    )
+    phone_match = PHONE_PATTERN.search(raw_text)
+    zip_match = ZIP_PATTERN.search(raw_text)
+    address_match = ADDRESS_PATTERN.search(raw_text)
+    state_match = STATE_PATTERN.search(raw_text)
 
     phone = (
         phone_match.group(0).strip()
@@ -1081,32 +991,28 @@ def parse_restaurant_record(
     state_abbreviation = (
         state_match.group(0).upper()
         if state_match
-        else STATE_ABBREVIATIONS[
-            target_state
-        ]
+        else STATE_ABBREVIATIONS[target_state]
     )
 
-    cuisine = classify_cuisine(
-        raw_text
-    )
+    cuisine = classify_cuisine(raw_text)
 
     restaurant_type = (
         ", ".join(
-            dict.fromkeys(
-                restaurant_types
-            )
+            dict.fromkeys(restaurant_types)
         )
         if restaurant_types
         else "Restaurant"
     )
 
     # -------------------------------------------------------------------------
-    # Confidence classification
+    # Confidence
+    #
+    # Don't make confidence a gate. It is descriptive information.
     # -------------------------------------------------------------------------
 
     if candidate_score >= 8:
         confidence = "High"
-    elif candidate_score >= 5:
+    elif candidate_score >= 4:
         confidence = "Medium"
     else:
         confidence = "Low"
@@ -1154,11 +1060,12 @@ def deduplicate_restaurants(
 
     for record in records:
 
-        name = record[
-            "Restaurant Name"
-        ]
+        name = record["Restaurant Name"]
 
-        if name == "Unknown Restaurant":
+        if (
+            name == "Unknown Restaurant"
+            or not name
+        ):
             continue
 
         key = normalize_name(name)
@@ -1169,14 +1076,15 @@ def deduplicate_restaurants(
         existing = best_records.get(key)
 
         if existing is None:
+
             best_records[key] = record
             continue
 
-        # Keep the record with the strongest extraction evidence.
+        # Prefer records containing actual contact/address information.
         existing_score = (
             existing["Candidate Score"]
             + (
-                2
+                3
                 if existing["Address"] != "N/A"
                 else 0
             )
@@ -1185,12 +1093,17 @@ def deduplicate_restaurants(
                 if existing["Phone"] != "N/A"
                 else 0
             )
+            + (
+                1
+                if existing["ZIP"] != "N/A"
+                else 0
+            )
         )
 
         new_score = (
             record["Candidate Score"]
             + (
-                2
+                3
                 if record["Address"] != "N/A"
                 else 0
             )
@@ -1199,15 +1112,20 @@ def deduplicate_restaurants(
                 if record["Phone"] != "N/A"
                 else 0
             )
+            + (
+                1
+                if record["ZIP"] != "N/A"
+                else 0
+            )
         )
 
         if new_score > existing_score:
+
             best_records[key] = record
 
     return list(
         best_records.values()
     )
-
 
 # =============================================================================
 # 13. PROCESS SEARCH RESULTS
@@ -1237,32 +1155,46 @@ def process_restaurant_results(
         records.append(record)
 
     # Deduplicate across search queries.
-    records = deduplicate_restaurants(
-        records
-    )
+    records = deduplicate_restaurants(records)
 
     if not records:
         return pd.DataFrame()
 
     df = pd.DataFrame(records)
 
-    # Sort strongest records first.
     df = df.sort_values(
-        by=[
-            "Candidate Score",
-            "Confidence",
-        ],
-        ascending=[
-            False,
-            True,
-        ],
+        by="Candidate Score",
+        ascending=False,
     )
 
-    # Return only the number requested.
     return df.head(
         requested_count
     ).reset_index(drop=True)
 
+df_results = st.session_state.df_results
+if (
+    st.session_state.search_results
+    and df_results.empty
+):
+
+    st.warning(
+        "Search results were returned, but no restaurant "
+        "candidates survived the extraction process."
+    )
+
+    with st.expander(
+        "🔎 Debug: View raw search results"
+    ):
+
+        debug_df = pd.DataFrame(
+            st.session_state.search_results
+        )
+
+        st.dataframe(
+            debug_df,
+            use_container_width=True,
+            hide_index=True,
+        )
 
 # =============================================================================
 # 14. SESSION STATE
