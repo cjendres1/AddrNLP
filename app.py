@@ -275,8 +275,8 @@ ADDRESS_PATTERN = re.compile(
     \b
     \d{1,6}
     \s+
-    [A-Za-z0-9.'#&\-]+
-    (?:\s+[A-Za-z0-9.'#&\-]+){0,8}
+    [A-Za-z0-9.'#&-]+
+    (?:\s+[A-Za-z0-9.'#&-]+){0,8}
     \s+
     (?:ST|STREET|
        AVE|AVENUE|
@@ -288,12 +288,10 @@ ADDRESS_PATTERN = re.compile(
        PL|PLACE|
        PKWY|PARKWAY|
        HWY|HIGHWAY|
-       WAY|
-       TER|TERRACE|
+       WAY|TER|TERRACE|
        CIR|CIRCLE|
-       PIKE|
-       TRL|TRAIL)
-    (?:\s+(?:#|STE|SUITE|APT|UNIT)\s*[A-Za-z0-9\-]+)?
+       PIKE|TRL|TRAIL)
+    (?:\s+(?:STE|SUITE|APT|UNIT)\s*[A-Za-z0-9-]+)?
     \b
     """,
     re.IGNORECASE | re.VERBOSE,
