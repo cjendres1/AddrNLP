@@ -45,6 +45,26 @@ GENERIC_WEB_RESULT_PATTERNS = [
     r"^dining and restaurants",
 ]
 
+GENERIC_LIST_TITLE_PATTERNS = [
+    r"^\(\d{4}\s+guide\)$",
+    r"^best\s+.+\s+restaurants?$",
+    r"^top\s+\d+\s+best\s+.+",
+    r"^top\s+\d+\s+.+\s+in\s+",
+    r"^best\s+.+\s+in\s+",
+    r"^best\s+.+\s+near\s+",
+]
+
+def is_generic_list_title(name: str) -> bool:
+    normalized = re.sub(
+        r"\s+",
+        " ",
+        name.strip().lower(),
+    )
+
+    return any(
+        re.search(pattern, normalized)
+        for pattern in GENERIC_LIST_TITLE_PATTERNS
+    )
 
 def normalize_name(name: str) -> str:
     name = name.lower().strip()
@@ -82,6 +102,27 @@ def is_bad_candidate(name: str) -> bool:
         return True
 
     if is_generic_web_result(name):
+        return True
+
+    if is_generic_list_title(name):
+        return True
+
+    # Search engines frequently truncate page titles.
+    if name.endswith("...") or name.endswith("…"):
+        return True
+
+    # Avoid titles that are clearly years / guide labels.
+    if re.fullmatch(
+        r"\(?\d{4}\s+(guide|edition|list)\)?",
+        normalized,
+    ):
+        return True
+
+# Incomplete search-result titles are not useful restaurant names.
+    if re.search(r"\b(the real)\b", normalized) and (
+        name.endswith("...")
+        or name.endswith("…")
+    ):
         return True
 
     if any(
