@@ -1,4 +1,6 @@
 import re
+import requests
+from bs4 import BeautifulSoup
 from typing import Dict, List
 
 import pandas as pd
@@ -91,6 +93,185 @@ def standardize_address(address: str) -> str:
 
     return result.strip()
 
+# =============================================================================
+# WEB PAGE ENRICHMENT
+# =============================================================================
+
+@st.cache_data(
+    ttl=3600,
+    show_spinner=False,
+)
+def fetch_page_text(url: str) -> str:
+    """
+    Fetch visible text from a restaurant webpage.
+
+    This is intentionally lightweight:
+    - Only used for promising restaurant candidates.
+    - Cached for one hour.
+    - Returns empty text if the page cannot be retrieved.
+    """
+
+    if not url:
+        return ""
+
+    try:
+        response = requests.get(
+            url,
+            timeout=8,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 "
+                    "(Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) "
+                    "Chrome/151.0 Safari/537.36"
+                )
+            },
+        )
+
+        response.raise_for_status()
+
+        # Don't process unexpectedly large pages.
+        html = response.text[:2_000_000]
+
+        soup = BeautifulSoup(
+            html,
+            "html.parser",
+        )
+
+        # Remove content that is unlikely to contain useful business data.
+        for tag in soup(
+            [
+                "script",
+                "style",
+                "noscript",
+                "svg",
+                "iframe",
+            ]
+        ):
+            tag.decompose()
+
+        text = soup.get_text(
+            separator=" ",
+            strip=True,
+        )
+
+        return re.sub(
+            r"\s+",
+            " ",
+            text,
+        )
+
+    except Exception:
+        return ""
+
+def extract_contact_fields(
+    text: str,
+) -> Dict[str, str]:
+    """
+    Extract address, ZIP, and phone from arbitrary webpage text
+    using the application's existing regex patterns.
+    """
+
+    if not text:
+        return {
+            "Address": "N/A",
+            "ZIP": "N/A",
+            "Phone": "N/A",
+        }
+
+    phone_match = PHONE_PATTERN.search(text)
+    zip_match = ZIP_PATTERN.search(text)
+    address_match = ADDRESS_PATTERN.search(text)
+
+    phone = (
+        phone_match.group(0).strip()
+        if phone_match
+        else "N/A"
+    )
+
+    zip_code = (
+        zip_match.group(0).strip()
+        if zip_match
+        else "N/A"
+    )
+
+    raw_address = (
+        address_match.group(0).strip()
+        if address_match
+        else "N/A"
+    )
+
+    return {
+        "Address": raw_address,
+        "ZIP": zip_code,
+        "Phone": phone,
+    }
+
+def enrich_record_from_webpage(
+    record: Dict[str, str],
+) -> Dict[str, str]:
+    """
+    Try to fill missing address/contact fields from the restaurant's
+    source webpage.
+
+    Existing values are never overwritten.
+    """
+
+    url = record.get(
+        "Website / Source",
+        "",
+    )
+
+    if not url:
+        return record
+
+    # Don't fetch a page if we already have everything we need.
+    needs_enrichment = any(
+        record.get(field, "N/A") == "N/A"
+        for field in [
+            "Address",
+            "Phone",
+            "ZIP",
+        ]
+    )
+
+    if not needs_enrichment:
+        return record
+
+    page_text = fetch_page_text(url)
+
+    if not page_text:
+        return record
+
+    extracted = extract_contact_fields(
+        page_text
+    )
+
+    # Only fill missing values.
+    for field in [
+        "Address",
+        "Phone",
+        "ZIP",
+    ]:
+
+        if (
+            record.get(field, "N/A") == "N/A"
+            and extracted[field] != "N/A"
+        ):
+            record[field] = extracted[field]
+
+    # Standardize an address if we found one.
+    if (
+        record.get("Address", "N/A") != "N/A"
+    ):
+        record["Standardized Address"] = (
+            standardize_address(
+                record["Address"]
+            )
+        )
+
+    return record
 
 def parse_restaurant_record(
     result: Dict[str, str],
@@ -216,44 +397,124 @@ def process_restaurant_results(
     target_state: str,
     requested_count: int,
 ) -> pd.DataFrame:
+
     if not search_results:
         return pd.DataFrame()
 
-    # Load the cached spaCy pipeline once, then process all snippets as a batch.
-    nlp = load_spacy_pipeline()
-
-    texts = [
-        f"{result.get('title', '')}. "
-        f"{result.get('body', '')}. "
-        f"{target_city}, {target_state}."
-        for result in search_results
-    ]
-
-    # nlp.pipe() avoids repeatedly entering the spaCy pipeline for each result.
-    docs = nlp.pipe(texts, batch_size=32)
-
     records = []
 
-    for result, doc in zip(search_results, docs):
-        try:
-            records.append(
-                parse_restaurant_record(
-                    result=result,
-                    target_city=target_city,
-                    target_state=target_state,
-                    doc=doc,
-                )
-            )
-        except Exception:
-            # One malformed result should not terminate the whole search.
-            continue
+    # -------------------------------------------------------------------------
+    # Phase 1:
+    # Search-result NLP / regex extraction
+    # -------------------------------------------------------------------------
 
-    records = deduplicate_restaurants(records)
+    for result in search_results:
+
+        record = parse_restaurant_record(
+            result,
+            target_city,
+            target_state,
+        )
+
+        records.append(record)
+
+    # -------------------------------------------------------------------------
+    # Phase 2:
+    # Deduplicate restaurants found across multiple searches.
+    # -------------------------------------------------------------------------
+
+    records = deduplicate_restaurants(
+        records
+    )
 
     if not records:
         return pd.DataFrame()
 
-    df = pd.DataFrame(records)
-    df = df.sort_values(by="Candidate Score", ascending=False)
+    # -------------------------------------------------------------------------
+    # Phase 3:
+    # Web enrichment
+    #
+    # Only enrich promising candidates rather than every search result.
+    # -------------------------------------------------------------------------
 
-    return df.head(requested_count).reset_index(drop=True)
+    records.sort(
+        key=lambda x: (
+            x["Candidate Score"]
+            + (
+                3
+                if x["Address"] != "N/A"
+                else 0
+            )
+            + (
+                2
+                if x["Phone"] != "N/A"
+                else 0
+            )
+            + (
+                1
+                if x["ZIP"] != "N/A"
+                else 0
+            )
+        ),
+        reverse=True,
+    )
+
+    enrichment_limit = min(
+        len(records),
+        max(
+            requested_count * 2,
+            10,
+        ),
+    )
+
+    for i in range(enrichment_limit):
+
+        records[i] = enrich_record_from_webpage(
+            records[i]
+        )
+
+    # -------------------------------------------------------------------------
+    # Phase 4:
+    # Deduplicate again because enrichment may give previously incomplete
+    # records better contact information.
+    # -------------------------------------------------------------------------
+
+    records = deduplicate_restaurants(
+        records
+    )
+
+    if not records:
+        return pd.DataFrame()
+
+    # -------------------------------------------------------------------------
+    # Phase 5:
+    # Final sort and requested result count.
+    # -------------------------------------------------------------------------
+
+    records.sort(
+        key=lambda x: (
+            x["Candidate Score"]
+            + (
+                3
+                if x["Address"] != "N/A"
+                else 0
+            )
+            + (
+                2
+                if x["Phone"] != "N/A"
+                else 0
+            )
+            + (
+                1
+                if x["ZIP"] != "N/A"
+                else 0
+            )
+        ),
+        reverse=True,
+    )
+
+    return pd.DataFrame(
+        records[:requested_count]
+    ).reset_index(
+        drop=True
+    )
