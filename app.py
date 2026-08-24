@@ -275,28 +275,25 @@ ADDRESS_PATTERN = re.compile(
     \b
     \d{1,6}
     \s+
-    [A-Za-z0-9.'#&\- ]{2,80}?
+    [A-Za-z0-9.'#&\-]+
+    (?:\s+[A-Za-z0-9.'#&\-]+){0,8}
     \s+
-    (?:
-        ST|STREET|
-        AVE|AVENUE|
-        RD|ROAD|
-        DR|DRIVE|
-        BLVD|BOULEVARD|
-        LN|LANE|
-        CT|COURT|
-        PL|PLACE|
-        PKWY|PARKWAY|
-        HWY|HIGHWAY|
-        WAY|
-        TER|TERRACE|
-        CIR|CIRCLE|
-        PIKE|
-        TRL|TRAIL
-    )
-    (?:
-        \s+(?:#|STE|SUITE|APT|UNIT)\s*[A-Za-z0-9\-]+
-    )?
+    (?:ST|STREET|
+       AVE|AVENUE|
+       RD|ROAD|
+       DR|DRIVE|
+       BLVD|BOULEVARD|
+       LN|LANE|
+       CT|COURT|
+       PL|PLACE|
+       PKWY|PARKWAY|
+       HWY|HIGHWAY|
+       WAY|
+       TER|TERRACE|
+       CIR|CIRCLE|
+       PIKE|
+       TRL|TRAIL)
+    (?:\s+(?:#|STE|SUITE|APT|UNIT)\s*[A-Za-z0-9\-]+)?
     \b
     """,
     re.IGNORECASE | re.VERBOSE,
@@ -794,33 +791,55 @@ search_button = st.sidebar.button(
 
 if search_button:
 
+    # Keep both representations:
+    #   state_name = human-readable name, e.g. "Texas"
+    #   state_abbreviation = standardized code, e.g. "TX"
+    state_name = selected_state
+    state_abbreviation = STATE_ABBREVIATIONS[selected_state]
+
     search_key = (
-        selected_state,
+        state_name,
         selected_city,
         record_limit,
     )
 
     with st.spinner(
         f"Searching for restaurants in "
-        f"{selected_city}, {selected_state}..."
+        f"{selected_city}, {state_name}..."
     ):
 
+        # ---------------------------------------------------------------------
+        # Step 1: Retrieve live unstructured web results
+        # ---------------------------------------------------------------------
         results = fetch_live_restaurant_search(
             city=selected_city,
-            state=STATE_ABBREVIATIONS[selected_state],
+            state=state_abbreviation,
             limit=record_limit,
         )
 
+        # ---------------------------------------------------------------------
+        # Step 2: Store raw search results
+        # ---------------------------------------------------------------------
         st.session_state.search_results = results
 
+        # ---------------------------------------------------------------------
+        # Step 3: Parse results with spaCy + regex
+        #
+        # Pass the full state name to the parser because it is the
+        # user-facing value we want associated with the record.
+        # The parser separately extracts/standardizes the abbreviation.
+        # ---------------------------------------------------------------------
         st.session_state.df_results = (
             process_restaurant_results(
                 results,
-                selected_city,
-                selected_state,
+                target_city=selected_city,
+                target_state=state_name,
             )
         )
 
+        # ---------------------------------------------------------------------
+        # Step 4: Remember the parameters used for this search
+        # ---------------------------------------------------------------------
         st.session_state.last_search = search_key
 
 
