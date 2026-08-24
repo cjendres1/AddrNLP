@@ -1,11 +1,11 @@
 import streamlit as st
+import en_core_web_sm
 import spacy
 
 
 @st.cache_resource
 def load_spacy_pipeline():
-    """Load spaCy once and add deterministic restaurant-type patterns."""
-    nlp = spacy.load("en_core_web_sm")
+    nlp = en_core_web_sm.load()
 
     if "restaurant_ruler" not in nlp.pipe_names:
         ruler = nlp.add_pipe(
@@ -17,25 +17,29 @@ def load_spacy_pipeline():
         patterns = [
             {
                 "label": "RESTAURANT_TYPE",
-                "pattern": [{"LOWER": {"IN": [
-                    "restaurant", "cafe", "café", "bistro", "bar", "grill",
-                    "steakhouse", "diner", "bakery", "pizzeria", "taqueria",
-                    "brewery",
-                ]}}],
-            },
-            {
-                "label": "RESTAURANT_TYPE",
-                "pattern": [{"LOWER": "coffee"}, {"LOWER": {"IN": ["shop", "house"]}}],
-            },
-            {
-                "label": "RESTAURANT_TYPE",
                 "pattern": [
-                    {"LOWER": "ice"},
-                    {"LOWER": "cream"},
-                    {"LOWER": {"IN": ["shop", "parlor"]}},
+                    {
+                        "LOWER": {
+                            "IN": [
+                                "restaurant",
+                                "cafe",
+                                "café",
+                                "bistro",
+                                "bar",
+                                "grill",
+                                "steakhouse",
+                                "diner",
+                                "bakery",
+                                "pizzeria",
+                                "taqueria",
+                                "brewery",
+                            ]
+                        }
+                    }
                 ],
-            },
+            }
         ]
+
         ruler.add_patterns(patterns)
 
     return nlp
