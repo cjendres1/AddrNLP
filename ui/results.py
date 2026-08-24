@@ -54,13 +54,13 @@ def render_results(
         "Restaurant Name",
         "Confidence",
         "Cuisine",
-        "Restaurant Type",
+#        "Restaurant Type",
         "Address",
+        "Phone",
         "Standardized Address",
         "City",
         "State",
         "ZIP",
-        "Phone",
         "Website / Source",
     ]
 
