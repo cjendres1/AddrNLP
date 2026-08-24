@@ -1,9 +1,10 @@
 import re
-import requests
-from bs4 import BeautifulSoup
 from typing import Dict, List
 
 import pandas as pd
+import requests
+import streamlit as st
+from bs4 import BeautifulSoup
 
 from config.locations import STATE_ABBREVIATIONS
 from nlp.pipeline import load_spacy_pipeline
