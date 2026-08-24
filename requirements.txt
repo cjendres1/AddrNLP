@@ -1,6 +1,6 @@
-streamlit
-pandas
-numpy<2.0.0
-spacy>=3.7.0,<3.8.0
-duckduckgo_search
-https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1.tar.gz#egg=en_core_web_sm
+streamlit>=1.40,<2.0
+pandas>=2.2,<3.0
+spacy>=3.8,<3.9
+ddgs>=9.0,<10.0
+
+https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
