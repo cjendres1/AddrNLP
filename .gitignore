@@ -16,6 +16,7 @@ venv.bak/
 
 # Streamlit local settings & secrets
 .streamlit/secrets.toml
+.streamlit/config.toml
 
 # IDE & Editor files
 .vscode/
@@ -45,5 +46,28 @@ wheels/
 *.log
 *.sqlite3
 
-# spaCy downloaded assets/models (if downloaded locally into directory)
+# spaCy downloaded assets/models
 models/
+
+# Environment variables / local configuration
+.env
+.env.*
+!.env.example
+
+# Test / coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Local data / generated output
+data/
+output/
+tmp/
+
+# OS files
+Thumbs.db
