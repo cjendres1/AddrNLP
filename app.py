@@ -67,10 +67,10 @@ def main():
 
     if search_button:
         state_abbreviation = STATE_ABBREVIATIONS[selected_state]
-        search_key = (selected_state, selected_city, record_limit)
 
         with st.spinner(
-            f"Searching for restaurants in {selected_city}, {selected_state}..."
+            f"Searching for restaurants in "
+            f"{selected_city}, {state_abbreviation}..."
         ):
             results = fetch_live_restaurant_search(
                 city=selected_city,
@@ -79,18 +79,30 @@ def main():
             )
 
             st.session_state.search_results = results
-            st.session_state.df_results = process_restaurant_results(
-                search_results=results,
-                target_city=selected_city,
-                target_state=selected_state,
-                requested_count=record_limit,
+
+            st.session_state.df_results = (
+                process_restaurant_results(
+                    search_results=results,
+                    target_city=selected_city,
+                    target_state=selected_state,
+                    requested_count=record_limit,
+                )
             )
-            st.session_state.last_search = search_key
+
+            st.session_state.last_search = (
+                selected_state,
+                selected_city,
+                record_limit,
+            )
 
     df_results = st.session_state.df_results
 
     if not df_results.empty:
-        render_results(df_results)
+        render_results(
+            df_results=df_results,
+            selected_city=selected_city,
+            selected_state=selected_state,
+        )
         render_inspection(df_results)
     elif st.session_state.search_results:
         st.warning(
